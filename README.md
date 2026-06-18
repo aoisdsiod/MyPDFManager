@@ -1,20 +1,29 @@
 # My PDF Manager
 
+<<<<<<< HEAD
 一个使用AI开发的基于 Jetpack Compose 的 Android PDF 文件管理应用。
 
 > 仅支持管理纯数字命名的 PDF 文件，这是一个针对特定场景设计的 PDF 管理器。
+
 > 如需适配其他场景，可下载源码自行修改。
 
+=======
+一个基于 Jetpack Compose 的 Android PDF 文件管理应用。
+只能管理纯数字命名的PDF文件，这是一个针对特定场景设计的PDF管理器
+>>>>>>> 6c94bf3 (完善使用说明)
 
 
 
 ## 下载
 
 
-[📥 下载 APK v1.0.0](https://github.com/aoisdsiod/MyPDFManager/releases/download/v1.0.0/1.0.apk)
+[📥 下载 APK v1.0.0](https://github.com/aoisdsiod/MyPDFManager/releases/download/v1.0.1/1.0.1apk)
+
+<<<<<<< HEAD
 
 
-
+=======
+>>>>>>> 6c94bf3 (完善使用说明)
 
 ## 功能
 

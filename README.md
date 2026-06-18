@@ -2,6 +2,11 @@
 
 一个基于 Jetpack Compose 的 Android PDF 文件管理应用。
 
+## 下载
+
+[📥 下载 APK v1.0.0](https://github.com/aoisdsiod/MyPDFManager/releases/download/v1.0.0/1.0.apk)
+
+
 ## 功能
 
 - 📄 **PDF 阅读** — 支持连续滚动和单页两种阅读模式，手势缩放、页面导航

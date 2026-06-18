@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">良辰的数据库</string>
+    <string name="select_library_folder">选择库文件夹</string>
+    <string name="welcome_message">欢迎使用 My PDF Manager</string>
+    <string name="getting_started">请选择一个文件夹作为您的 PDF 库</string>
+    <string name="start_button">开始使用</string>
+    <string name="change_library">更改库文件夹</string>
+    <string name="current_library">当前库路径</string>
+    <string name="thumbnail_size">预览图大小</string>
+    <string name="large">大</string>
+    <string name="medium">中</string>
+    <string name="small">小</string>
+    <string name="favorites">收藏</string>
+    <string name="all_files">全部文件</string>
+    <string name="settings">设置</string>
+    <string name="share">分享此文件</string>
+    <string name="start_reading">开始阅读</string>
+    <string name="notes_hint">添加备注...</string>
+    <string name="add_tag">添加标签</string>
+    <string name="select_category">选择类别</string>
+    <string name="new_category">新建类别</string>
+    <string name="category_name">类别名称</string>
+    <string name="tag_value">标签值</string>
+    <string name="save">保存</string>
+    <string name="cancel">取消</string>
+    <string name="coming_soon">即将推出</string>
+    <string name="tag_exists">标签已存在</string>
+</resources>

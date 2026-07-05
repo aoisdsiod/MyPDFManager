@@ -204,60 +204,51 @@ object ZipProcessor {
             val totalPages = images.size
             val pdfDocument = PdfDocument()
 
-            // ---- 第二步：第一遍扫描，找出所有图片中的最大宽度 ----
-            // 所有页面最终统一为最大宽度，保持视觉一致性
+            // ---- 第二步：第一遍扫描，只读尺寸，计算降采样率 ----
+            val decodeOpts = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
             var maxWidth = 0
-            val bitmaps = mutableListOf<Bitmap>()
+            for (imageBytes in images) {
+                BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOpts)
+                if (decodeOpts.outWidth > maxWidth) maxWidth = decodeOpts.outWidth
+            }
+
+            // 计算降采样率：限制最大宽度 1200px（inSampleSize 必须 2 的幂）
+            val maxTargetWidth = 1200
+            val rawSample = if (maxWidth > maxTargetWidth) maxWidth / maxTargetWidth else 1
+            val sampleSize = Integer.highestOneBit(rawSample).coerceAtLeast(1)
+            val renderOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+
+            Log.d(TAG, "原始最大宽度: $maxWidth, 样本率: $sampleSize")
+
+            // ---- 第三步：逐页解码、缩放为目标宽度、写入 PDF，立即回收 ----
             images.forEachIndexed { index, imageBytes ->
-                // 将字节数组解码为 Bitmap
-                val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                if (bitmap != null) {
-                    bitmaps.add(bitmap)
-                    if (bitmap.width > maxWidth) {
-                        maxWidth = bitmap.width
-                    }
-                }
-            }
-
-            if (bitmaps.isEmpty()) {
-                Log.w(TAG, "ZIP 中没有有效的图片")
-                return@withContext false
-            }
-
-            Log.d(TAG, "所有图片中的最大宽度: $maxWidth")
-
-            // ---- 第三步：第二遍遍历，逐页生成 PDF ----
-            bitmaps.forEachIndexed { index, originalBitmap ->
-                // 计算缩放比例，使当前图片宽度 = 最大宽度
-                val scale = maxWidth.toFloat() / originalBitmap.width.toFloat()
-                val scaledWidth = maxWidth
-                // 高度按相同比例缩放，保持宽高比
-                val scaledHeight = (originalBitmap.height * scale).toInt()
-
-                // 创建缩放后的 Bitmap（如果不需要缩放则复用原图）
-                val scaledBitmap = if (scale != 1.0f) {
-                    Bitmap.createScaledBitmap(originalBitmap, scaledWidth, scaledHeight, true)
-                } else {
-                    originalBitmap
+                val bmp = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, renderOpts)
+                if (bmp == null) {
+                    Log.w(TAG, "解码失败: 第 ${index + 1} 张图片")
+                    return@forEachIndexed
                 }
 
-                // 创建 PDF 页面，尺寸与缩放后的图片一致
+                // 统一缩放到目标宽度
+                val scale = maxTargetWidth.toFloat() / bmp.width
+                val scaledWidth = maxTargetWidth
+                val scaledHeight = (bmp.height * scale).toInt()
+                val scaledBmp = if (scale != 1.0f) {
+                    Bitmap.createScaledBitmap(bmp, scaledWidth, scaledHeight, true)
+                } else bmp
+
                 val pageInfo = PdfDocument.PageInfo.Builder(scaledWidth, scaledHeight, index + 1).create()
                 val page = pdfDocument.startPage(pageInfo)
-                val canvas = page.canvas
-
-                // 将缩放后的图片绘制到页面左上角（铺满整页）
-                canvas.drawBitmap(scaledBitmap, 0f, 0f, null)
-
+                page.canvas.drawBitmap(scaledBmp, 0f, 0f, null)
                 pdfDocument.finishPage(page)
 
-                // 回收不再需要的 Bitmap 对象，释放内存
-                if (scaledBitmap != originalBitmap) {
-                    scaledBitmap.recycle()
-                }
-                originalBitmap.recycle()
+                if (scaledBmp != bmp) scaledBmp.recycle()
+                bmp.recycle()
 
-                // 更新进度：当前页码 / 总页码
                 progress.value = Pair(index + 1, totalPages)
             }
 

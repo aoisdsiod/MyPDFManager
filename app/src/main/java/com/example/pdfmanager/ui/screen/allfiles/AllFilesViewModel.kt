@@ -123,6 +123,38 @@ class AllFilesViewModel(
     private val _scanProgress = MutableStateFlow<ScanProgress?>(null)
     val scanProgress: StateFlow<ScanProgress?> = _scanProgress.asStateFlow()
 
+    /** 手动扫描中标志（供 SettingsScreen 观察按钮状态） */
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    /** 扫描结果消息（供 SettingsScreen 显示 Toast，消费后置 null） */
+    private val _scanResultMessage = MutableStateFlow<String?>(null)
+    val scanResultMessage: StateFlow<String?> = _scanResultMessage.asStateFlow()
+
+    /** 消费扫描结果消息（避免切 tab 后重复弹 Toast） */
+    fun consumeScanResult() {
+        _scanResultMessage.value = null
+    }
+
+    // ── 滚动位置缓存（切 tab 后恢复）─────────────────────────────
+
+    /** 缓存的滚动项索引 */
+    private var cachedScrollIndex = 0
+    /** 缓存的滚动偏移量 */
+    private var cachedScrollOffset = 0
+
+    /** 保存滚动位置 */
+    fun saveScrollPosition(index: Int, offset: Int) {
+        cachedScrollIndex = index
+        cachedScrollOffset = offset
+    }
+
+    /** 恢复滚动位置，返回 (index, offset)，无缓存时返回 null */
+    fun getSavedScrollPosition(): Pair<Int, Int>? {
+        if (cachedScrollIndex == 0 && cachedScrollOffset == 0) return null
+        return Pair(cachedScrollIndex, cachedScrollOffset)
+    }
+
     /**
      * 扫描进度数据类
      * 
@@ -407,6 +439,38 @@ class AllFilesViewModel(
                 Log.e("AllFilesViewModel", "手动刷新失败", e)
             } finally {
                 _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * 手动扫描库文件夹（供 SettingsScreen 调用）
+     *
+     * 使用 viewModelScope 而非 Composable 的 rememberCoroutineScope，
+     * 确保切 tab 后扫描不中断，isScanning 状态不丢失。
+     *
+     * 调用位置：SettingsScreen.kt → "扫描库文件夹"按钮
+     */
+    fun scanLibraryFolder() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _isScanning.value = true
+            try {
+                Log.d("AllFilesViewModel", "用户手动扫描库文件夹")
+                val scanResult = pdfRepository.quickIncrementalScan()
+                _allPdfFiles.value = pdfRepository.pdfFiles.value
+                applyCurrentFilter()
+                AppContainer.searchIndexRepository.buildIndex(_allPdfFiles.value)
+                val moveInfo = if (scanResult.movedCount > 0) "，移动 ${scanResult.movedCount} 个文件" else ""
+                _scanResultMessage.value = if (scanResult.hasChanges) {
+                    "扫描完成：新增 ${scanResult.addedCount} 个文件，删除 ${scanResult.deletedCount} 个文件$moveInfo"
+                } else {
+                    "扫描完成：库文件夹与数据库一致"
+                }
+            } catch (e: Exception) {
+                Log.e("AllFilesViewModel", "手动扫描失败", e)
+                _scanResultMessage.value = "扫描失败：${e.message}"
+            } finally {
+                _isScanning.value = false
             }
         }
     }

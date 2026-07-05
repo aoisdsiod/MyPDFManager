@@ -658,34 +658,48 @@ class ConversionViewModel(
                     sortedInfos.filter { _selectedPages.value?.contains(it.index) == true }
                 }
 
-                // 第一遍：找出最大宽度，并解码所有选中的图片
-                var maxWidth = 0
-                val bitmaps = mutableListOf<Pair<Int, Bitmap>>()  // (index, bitmap)
-                for (info in selectedInfos) {
-                    val bmp = BitmapFactory.decodeFile(info.filePath)
-                    if (bmp != null) {
-                        bitmaps.add(Pair(info.index, bmp))
-                        if (bmp.width > maxWidth) maxWidth = bmp.width
-                    }
-                }
-
-                if (bitmaps.isEmpty()) {
+                if (selectedInfos.isEmpty()) {
                     Log.w("ConversionViewModel", "没有有效图片可转换")
                     return@launch
                 }
 
-                // 第二遍：以最大宽度为标准缩放图片，逐页写入 PDF
+                // 第一遍：只读取尺寸，找出最大宽度并计算降采样率
+                val decodeOpts = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                var maxWidth = 0
+                for (info in selectedInfos) {
+                    BitmapFactory.decodeFile(info.filePath, decodeOpts)
+                    if (decodeOpts.outWidth > maxWidth) maxWidth = decodeOpts.outWidth
+                }
+
+                // 计算降采样率：限制 PDF 内图片最大宽度 1200px
+                val maxTargetWidth = 1200
+                // inSampleSize 必须是 2 的幂，用 highestOneBit 保证
+                val rawSample = if (maxWidth > maxTargetWidth) maxWidth / maxTargetWidth else 1
+                val sampleSize = Integer.highestOneBit(rawSample).coerceAtLeast(1)
+                // 解码选项：降采样 + RGB_565（每像素 2 字节，文件减半）
+                val renderOpts = BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+
+                // 第二遍：逐页解码、缩放为目标宽度、写入 PDF，立即回收
                 val pdfDocument = PdfDocument()
-                bitmaps.forEachIndexed { idx, pair ->
-                    val (pageIndex, originalBitmap) = pair
-                    // 计算缩放比例
-                    val scale = maxWidth.toFloat() / originalBitmap.width
-                    val scaledW = maxWidth
-                    val scaledH = (originalBitmap.height * scale).toInt()
-                    // 缩放图片（如果比例不为 1）
+                selectedInfos.forEachIndexed { idx, info ->
+                    val bmp = BitmapFactory.decodeFile(info.filePath, renderOpts)
+                    if (bmp == null) {
+                        Log.w("ConversionViewModel", "解码失败: ${info.filePath}")
+                        return@forEachIndexed
+                    }
+
+                    // 统一缩放到目标宽度
+                    val scale = maxTargetWidth.toFloat() / bmp.width
+                    val scaledW = maxTargetWidth
+                    val scaledH = (bmp.height * scale).toInt()
                     val scaledBmp = if (scale != 1.0f) {
-                        Bitmap.createScaledBitmap(originalBitmap, scaledW, scaledH, true)
-                    } else originalBitmap
+                        Bitmap.createScaledBitmap(bmp, scaledW, scaledH, true)
+                    } else bmp
 
                     // 创建 PDF 页面并绘制图片
                     val pageInfo = PdfDocument.PageInfo.Builder(scaledW, scaledH, idx + 1).create()
@@ -693,13 +707,13 @@ class ConversionViewModel(
                     page.canvas.drawBitmap(scaledBmp, 0f, 0f, null)
                     pdfDocument.finishPage(page)
 
-                    // 回收不再需要的 Bitmap 对象，释放内存
-                    if (scaledBmp != originalBitmap) scaledBmp.recycle()
-                    originalBitmap.recycle()
+                    // 立即回收，释放内存
+                    if (scaledBmp != bmp) scaledBmp.recycle()
+                    bmp.recycle()
 
                     // 在主线程更新进度（当前页数/总页数）
                     val current = idx + 1
-                    val total = bitmaps.size
+                    val total = selectedInfos.size
                     withContext(Dispatchers.Main) {
                         _conversionProgress.value = ConversionProgress(
                             currentFileName = zipName,
@@ -786,6 +800,11 @@ class ConversionViewModel(
                 withContext(Dispatchers.Main) {
                     _conversionProgress.value = null  // 先清除进度
                     _conversionResult.value = Pair(1, emptyList())  // 成功 1 个
+                    // 从文件列表删除已转换的 ZIP
+                    val remainingFiles = _zipFiles.value.filterNot { it.name == zipName }
+                    _zipFiles.value = remainingFiles
+                    _selectedFiles.value = _selectedFiles.value - zipName
+
                 }
             } catch (e: Exception) {
                 Log.e("ConversionViewModel", "页码选择后转换失败", e)

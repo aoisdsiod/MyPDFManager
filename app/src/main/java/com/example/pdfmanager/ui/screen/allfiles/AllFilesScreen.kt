@@ -260,6 +260,36 @@ fun AllFilesScreen(
         }
     }
 
+    // ── 切 tab 后恢复滚动位置 ──
+    LaunchedEffect(Unit) {
+        viewModel.getSavedScrollPosition()?.let { (index, offset) ->
+            if (isGridView) {
+                gridState.scrollToItem(index, offset)
+            } else {
+                listState.scrollToItem(index, offset)
+            }
+        }
+
+    }
+
+    // ── 切 tab 前保存滚动位置 ──
+    DisposableEffect(listState, gridState, isGridView) {
+        onDispose {
+            if (isGridView) {
+                viewModel.saveScrollPosition(
+                    gridState.firstVisibleItemIndex,
+                    gridState.firstVisibleItemScrollOffset
+                )
+            } else {
+                viewModel.saveScrollPosition(
+                    listState.firstVisibleItemIndex,
+                    listState.firstVisibleItemScrollOffset
+                )
+            }
+
+        }
+    }
+
     // ── 显示引导页或主内容 ──
     if (needsLibrarySetup) {
         LibrarySetupScreen(onRequestLibrary = onRequestLibrary)

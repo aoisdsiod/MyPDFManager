@@ -76,6 +76,24 @@ fun SettingsScreen(
         factory = AllFilesViewModel.Factory()
     )
 
+    // 扫描状态从 ViewModel 获取，切 tab 不丢失
+    val isScanning by allFilesViewModel.isScanning.collectAsStateWithLifecycle()
+
+    // 扫描完成后显示 Toast（消费后不再弹）
+    LaunchedEffect(Unit) {
+        allFilesViewModel.scanResultMessage.collect { message ->
+            if (message != null) {
+                android.widget.Toast.makeText(
+                    context,
+                    message,
+                    if (message.startsWith("扫描失败")) android.widget.Toast.LENGTH_LONG
+                    else android.widget.Toast.LENGTH_SHORT
+                ).show()
+                allFilesViewModel.consumeScanResult()  // 消费，避免切 tab 再弹
+            }
+        }
+    }
+
     // 当前选中的文件 ID 集合（多选模式下使用）
     val selectedFileIds by AppContainer.selectedFileIds.collectAsStateWithLifecycle()
 
@@ -121,7 +139,6 @@ fun SettingsScreen(
     // ── 数据库操作状态 ──
     var showMigrateProgress by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
-    var isScanning by remember { mutableStateOf(false) }
 
     // ── 缩略图生成状态（来自全局 AppContainer） ──
     val thumbnailProgress by AppContainer.thumbnailProgress.collectAsStateWithLifecycle()
@@ -447,44 +464,10 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // 按钮1：增量扫描库文件夹
+                // 按钮1：增量扫描库文件夹（使用 viewModelScope，切 tab 不中断）
                 Button(
                     onClick = {
-                        coroutineScope.launch {
-                            isScanning = true
-                            try {
-                                val libraryUri = preferencesManager.getLibraryUri()
-                                if (libraryUri != null) {
-                                    // 增量扫描：对比库文件夹与数据库，添加新文件并删除不存在的文件
-                                    val scanResult = com.example.pdfmanager.data.repository.AppContainer.pdfRepository.quickIncrementalScan()
-                                    val moveInfo = if (scanResult.movedCount > 0) "，移动 ${scanResult.movedCount} 个文件" else ""
-                                    val message = if (scanResult.hasChanges) {
-                                        "扫描完成：新增 ${scanResult.addedCount} 个文件，删除 ${scanResult.deletedCount} 个文件$moveInfo"
-                                    } else {
-                                        "扫描完成：库文件夹与数据库一致"
-                                    }
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        message,
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        "请先设置库文件夹",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            } catch (e: Exception) {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "扫描失败：${e.message}",
-                                    android.widget.Toast.LENGTH_LONG
-                                ).show()
-                            } finally {
-                                isScanning = false
-                            }
-                        }
+                        allFilesViewModel.scanLibraryFolder()
                     },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !isScanning

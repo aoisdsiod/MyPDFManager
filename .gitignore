@@ -11,22 +11,32 @@
 # ===== 构建产物 =====
 build/
 .gradle/
-gradle-*[0-9]/
+gradle-8.7/
 !gradle/wrapper/gradle-wrapper.jar
 *.apk
 *.aab
 *.dex
+.kotlin/
 
 # ===== 本地配置 =====
 local.properties
 
-# ===== 临时/备份文件（按后缀） =====
+# ===== 临时/备份文件 =====
 *.bak
 *.temp
 *.tmp
 *~
+build_errors.txt
+build_output.txt
+unused_code_report.md
 
-# ===== 项目临时文件 =====
+# ===== 项目临时资源 =====
 PROJECT_STATUS.md
 icon_temp.svg
 图标.png
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

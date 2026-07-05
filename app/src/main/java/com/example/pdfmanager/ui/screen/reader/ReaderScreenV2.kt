@@ -59,6 +59,7 @@
 package com.example.pdfmanager.ui.screen.reader
 
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInVertically
@@ -78,6 +79,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -181,14 +183,13 @@ fun ReaderScreenV2(
     // 在 Composable 层获取协程作用域（正确位置）
     val coroutineScope = rememberCoroutineScope()
 
-    // ── 屏幕方向锁定 ──
+    // ── 屏幕方向管理 ──
     /**
-     * DisposableEffect(Unit)：阅读器页面挂载时无操作，卸载时将屏幕方向恢复为竖屏。
-     *
-     * 目的：阅读器可能设置为横屏阅读，退出时需要恢复竖屏方向。
-     * 当前版本未主动设置横屏，此效果主要起保护作用。
+     * 进入阅读器时把方向控制权交还系统（允许旋转/弹出旋转确认按钮），
+     * 退出时恢复竖屏锁定。
      */
     DisposableEffect(Unit) {
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
@@ -198,17 +199,8 @@ fun ReaderScreenV2(
     val toolbarMode by viewModel.toolbarMode.collectAsStateWithLifecycle()
     val pageMode by viewModel.pageMode.collectAsStateWithLifecycle()
 
-    // ── 工具栏可见性状态 ──
-    /**
-     * isToolbarVisible：控制工具栏的显示/隐藏。
-     * - 初始状态：toolbarMode != "hidden"，工具栏可见
-     * - 切换方式：双击 PDF 视图（onDoubleTap 回调）
-     * - toolbarMode == "hidden" 时始终隐藏
-     */
-    val isToolbarVisibleState = remember(toolbarMode) {
-        mutableStateOf(toolbarMode != "hidden")
-    }
-    var isToolbarVisible by isToolbarVisibleState
+    // ── 工具栏可见性状态（从 ViewModel 管理，配置变更后保持） ──
+    val isToolbarVisible by viewModel.isToolbarVisible.collectAsStateWithLifecycle()
 
     // ── 页码角标顶部间距动画 ──
     /**
@@ -360,7 +352,7 @@ fun ReaderScreenV2(
                              * onDoubleTap：双击切换工具栏可见性。
                              * _ 和 _ 分别代表 x, y 坐标（当前未使用）。
                              */
-                            view.onDoubleTap = { _, _ -> isToolbarVisible = !isToolbarVisible }
+                            view.onDoubleTap = { _, _ -> viewModel.toggleToolbar() }
                             // ✅ 初始页面跳转由 LaunchedEffect(isDocumentAvailable, currentPage) 统一处理
                         }
                         // 处理用户主动翻页请求（每次 recomposition 时检查）
@@ -386,7 +378,7 @@ fun ReaderScreenV2(
                             view.onPageChanged = { page ->
                                 viewModel.updateCurrentPageForScroll(page)
                             }
-                            view.onDoubleTap = { _, _ -> isToolbarVisible = !isToolbarVisible }
+                            view.onDoubleTap = { _, _ -> viewModel.toggleToolbar() }
                             // ✅ 初始页面跳转由 LaunchedEffect(isDocumentAvailable, currentPage) 统一处理
                         }
                         // 处理用户主动翻页请求
@@ -468,7 +460,7 @@ fun ReaderScreenV2(
                 pageMode = pageMode,
                 currentPage = currentPage,
                 totalPages = totalPages,
-                isLandscape = false,
+                isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
                 // 翻页模式切换回调
                 onPageModeChange = { newMode: String ->
                     viewModel.setPageMode(newMode)
@@ -512,7 +504,7 @@ fun ReaderScreenV2(
             PageNumberBadge(
                 currentPage = currentPage,
                 totalPages = totalPages,
-                onClick = { isToolbarVisible = true },
+                onClick = { viewModel.showToolbar() },
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .statusBarsPadding()

@@ -441,6 +441,25 @@ class ContinuousCanvasState(
     }
 
     /**
+     * 批量更新滚动偏移和缩放比例（缩放过程中使用）
+     *
+     * 合并 updateScroll + updateScale，确保只触发一次
+     * clampScroll 和 updateVisiblePages，避免缩放时
+     * 因双重状态更新导致的可见页面抖动和渲染闪屏。
+     *
+     * @param newScrollX 新的 X 轴滚动偏移
+     * @param newScrollY 新的 Y 轴滚动偏移
+     * @param newScale   新的缩放比例
+     */
+    fun updateScrollAndScale(newScrollX: Float, newScrollY: Float, newScale: Float) {
+        scrollX = newScrollX
+        scrollY = newScrollY
+        currentScale = newScale.coerceIn(minScale, maxScale)
+        clampScroll()
+        updateVisiblePages()
+    }
+
+    /**
      * 更新视口尺寸
      *
      * 在屏幕旋转或布局变化时调用。

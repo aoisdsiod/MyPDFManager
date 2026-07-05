@@ -186,6 +186,27 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     val toolbarMode: StateFlow<String> = preferencesManager.getReaderToolbarModeFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "full")
 
+    // ── 工具栏可见性状态（活过配置变更）────────────────────────────────
+
+    /**
+     * 工具栏可见性（StateFlow，供 UI 观察）
+     *
+     * 放在 ViewModel 中而非 Composable 的 remember 中，确保配置变更
+     * （如屏幕旋转）时状态不丢失。初始值为 true。
+     */
+    private val _isToolbarVisible = MutableStateFlow(true)
+    val isToolbarVisible: StateFlow<Boolean> = _isToolbarVisible.asStateFlow()
+
+    /** 切换工具栏可见性 */
+    fun toggleToolbar() {
+        _isToolbarVisible.value = !_isToolbarVisible.value
+    }
+
+    /** 显示工具栏 */
+    fun showToolbar() {
+        _isToolbarVisible.value = true
+    }
+
     // ── 当前文件 ID ─────────────────────────────────
 
     /**

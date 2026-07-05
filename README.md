@@ -14,7 +14,7 @@
 ## 下载
 
 
-[📥 下载 APK v1.0.0](https://github.com/aoisdsiod/MyPDFManager/releases/download/v1.0.1/1.0.1apk)
+[📥 下载 APK v1.0.1](https://github.com/aoisdsiod/MyPDFManager/releases/download/v1.0.1/1.0.1apk)
 
 
 

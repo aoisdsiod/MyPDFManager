@@ -142,13 +142,15 @@ class PdfContinuousView @JvmOverloads constructor(
             }
             currentSizeBytes += value.allocationByteCount
 
-            // 超出限制时移除最旧的条目
-            while (currentSizeBytes > maxCacheSizeBytes && isNotEmpty()) {
-                val oldestKey = keys.iterator().next()
-                val oldestBitmap = remove(oldestKey)
-                if (oldestBitmap != null) {
-                    currentSizeBytes -= oldestBitmap.allocationByteCount
-                    oldestBitmap.recycle()
+            // 超出限制时移除最旧的条目（缩放中跳过淘汰，保护可见页）
+            if (!isZooming) {
+                while (currentSizeBytes > maxCacheSizeBytes && isNotEmpty()) {
+                    val oldestKey = keys.iterator().next()
+                    val oldestBitmap = remove(oldestKey)
+                    if (oldestBitmap != null) {
+                        currentSizeBytes -= oldestBitmap.allocationByteCount
+                        oldestBitmap.recycle()
+                    }
                 }
             }
             return oldValue
@@ -370,6 +372,9 @@ class PdfContinuousView @JvmOverloads constructor(
     /** 是否正在执行缩放操作 */
     private var isScaling = false
 
+    /** 缩放下 LRU 缓存保护标志（与 isScaling 同步） */
+    private var isZooming = false
+
     // ===== 延迟初始化机制 =====
 
     /**
@@ -470,37 +475,39 @@ class PdfContinuousView @JvmOverloads constructor(
             // 滚动回调：视图失效触发重绘（使用 postInvalidateOnAnimation 优化性能）
             onScroll = { _, _ -> postInvalidateOnAnimation() },
             // 缩放回调：保持缩放焦点位置不变，更新滚动偏移和缩放比例
+            // 缩放回调：保持缩放焦点位置不变，批量更新滚动和缩放
             onScale = { scaleFactor, focusX, focusY ->
                 val handler = gestureHandler ?: return@ContinuousCanvasGestureHandler
                 val state = canvasState ?: return@ContinuousCanvasGestureHandler
 
                 if (isScaling) {
                     val newScale = handler.scale
-                    // 缩放时保持焦点位置不变：根据基准焦点和当前缩放计算新偏移
                     handler.scrollX = focusX - baseFocusX1x * newScale
                     handler.scrollY = focusY - baseFocusY1x * newScale
 
-                    // 钳制滚动到合法范围后更新状态
-                    state.updateScroll(handler.scrollX, handler.scrollY)
+                    currentScale = newScale
+
+                    // 批量更新滚动和缩放（一次 clamp + updateVisiblePages，避免闪屏）
+                    state.updateScrollAndScale(handler.scrollX, handler.scrollY, currentScale)
                     handler.scrollX = state.scrollX
                     handler.scrollY = state.scrollY
 
-                    currentScale = newScale
-                    state.updateScale(currentScale)
-
-                    // 缩放后更新手势处理器的画布/视口尺寸
                     updateGestureHandlerDimensions()
-
                     postInvalidateOnAnimation()
                 } else {
-                    // 缩放开始：记录当前焦点在 1x 坐标系下的位置
+                    // 缩放开始：记录焦点 + 进入 LRU 缓存保护
                     isScaling = true
+                    isZooming = true
                     baseFocusX1x = (focusX - handler.scrollX) / currentScale
                     baseFocusY1x = (focusY - handler.scrollY) / currentScale
                 }
             },
-            // 缩放结束回调
-            onScaleEnd = { isScaling = false },
+            // 缩放结束：退出缓存保护，立即触发预渲染
+            onScaleEnd = {
+                isScaling = false
+                isZooming = false
+                prerenderCurrentPage()
+            },
             // 惯性滑动回调
             onFling = { _, _ -> invalidate() },
             // 单击回调（当前为空操作）

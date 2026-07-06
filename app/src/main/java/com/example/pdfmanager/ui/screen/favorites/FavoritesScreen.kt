@@ -131,7 +131,11 @@ fun FavoritesScreen(
                             Text("已选 ${selectedFileIds.size} 个")
                         }
                         else -> {
-                            Text(currentFolder?.name ?: "收藏")
+                            Column {
+                                Text(currentFolder?.name ?: "收藏")
+                                Text("共 ${items.size} 项",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
                 },

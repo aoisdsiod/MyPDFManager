@@ -16,9 +16,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,6 +33,7 @@ import com.example.pdfmanager.data.model.PdfFile
 import com.example.pdfmanager.ui.component.PdfThumbnail
 import com.example.pdfmanager.ui.component.ShareTargetPicker
 import com.example.pdfmanager.ui.component.TagCategoryRowReadOnly
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.border
@@ -410,6 +415,8 @@ private fun DetailContent(
 ) {
     // Android 上下文（用于 ContentResolver 操作）
     val context = LocalContext.current
+    val notesFocusRequester = remember { FocusRequester() }
+    val coroutineScope = rememberCoroutineScope()
 
     // 焦点管理器（用于点击空白区域时清除输入框焦点）
     val focusManager = LocalFocusManager.current
@@ -495,9 +502,8 @@ private fun DetailContent(
                 indication = null,
                 interactionSource = interactionSource
             ) {
-                // 点击空白区域 → 清除焦点并手动保存
+                // 点击空白区域 → 仅关闭键盘（不保存，避免 Enter 键误触发）
                 focusManager.clearFocus()
-                onSaveNotes()
             }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -712,10 +718,21 @@ private fun DetailContent(
                     value = notes,
                     onValueChange = { newNotes ->
                         onNotesChanged(newNotes)
+                        // 搜狗 IME 按回车自动关键盘 → 等 100ms 键盘关完再重开
+                        if (newNotes.length == notes.length + 1 && newNotes.endsWith("\n")) {
+                            coroutineScope.launch {
+                                delay(100)
+                                notesFocusRequester.requestFocus()
+                            }
+                        }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(notesFocusRequester),
                     placeholder = { Text("添加备注...") },
-                    minLines = 3
+                    minLines = 3,
+                    singleLine = false,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.None)
 
                 )
             }

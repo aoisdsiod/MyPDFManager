@@ -311,6 +311,18 @@ fun ReaderScreenV2(
         previousPageMode = pageMode
     }
 
+    // ── 屏幕旋转时恢复页码 ──
+    val configuration = LocalConfiguration.current
+    var previousOrientation by remember { mutableStateOf(configuration.orientation) }
+    LaunchedEffect(configuration.orientation) {
+        if (previousOrientation != configuration.orientation) {
+            previousOrientation = configuration.orientation
+            if (isDocumentAvailable && isInitializationComplete) {
+                pendingPageJump = currentPage
+            }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // 主界面布局
     // ═══════════════════════════════════════════════════════════════════════

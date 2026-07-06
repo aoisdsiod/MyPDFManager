@@ -306,7 +306,11 @@ fun AllFilesScreen(
                         if (isMultiSelectMode) {
                             Text("已选 ${selectedFileIds.size} 个")
                         } else {
-                            Text("全部文件")
+                            Column {
+                                Text(if (isFilterActive) "筛选" else "全部文件")
+                                Text("共 ${pdfFiles.size} 个文件",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     },
                     navigationIcon = {

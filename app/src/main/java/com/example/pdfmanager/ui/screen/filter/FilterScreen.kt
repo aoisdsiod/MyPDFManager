@@ -82,13 +82,20 @@ fun FilterScreen(
     val includeNoTag by viewModel.includeNoTag.collectAsStateWithLifecycle()
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val totalFiles by AppContainer.pdfRepository.pdfFiles.collectAsStateWithLifecycle()
 
     // ── 页面骨架（Scaffold） ──
     Scaffold(
         topBar = {
             // 顶部标题栏
             TopAppBar(
-                title = { Text("筛选") },
+                title = {
+                    Column {
+                        Text("筛选")
+                        Text("共 ${totalFiles.size} 个文件",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                },
                 actions = {
                     // 且/或切换按钮
                     OutlinedButton(

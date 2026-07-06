@@ -973,12 +973,26 @@ class PdfContinuousView @JvmOverloads constructor(
             return
         }
 
-        // 已初始化：更新视口尺寸
-        canvasState?.updateViewportSize(w, h)
-        minScale = canvasState?.minScale ?: 1.0f
-        currentScale = currentScale.coerceIn(minScale, maxScale)
-        gestureHandler?.setScaleRange(minScale, maxScale)
-        updateGestureHandlerDimensions()
+        // 尺寸变化时重置比例到 fit-width，页码由 Compose 层 pendingPageJump 恢复
+        if (isInitialized && oldw > 0 && oldh > 0) {
+            canvasState?.updateViewportSize(w, h)
+            canvasState?.let { it.updateScale(it.minScale) }
+            minScale = canvasState?.minScale ?: 1.0f
+            currentScale = minScale
+            gestureHandler?.let {
+                it.setScaleRange(minScale, minScale)
+                it.setScaleRange(minScale, maxScale)
+                it.scrollX = 0f
+            }
+            updateGestureHandlerDimensions()
+        } else {
+            // 仅 resize（非旋转场景）
+            canvasState?.updateViewportSize(w, h)
+            minScale = canvasState?.minScale ?: 1.0f
+            currentScale = currentScale.coerceIn(minScale, maxScale)
+            gestureHandler?.setScaleRange(minScale, maxScale)
+            updateGestureHandlerDimensions()
+        }
     }
 
     /**

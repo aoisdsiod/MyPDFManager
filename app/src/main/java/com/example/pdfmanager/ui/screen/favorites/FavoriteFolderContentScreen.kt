@@ -250,8 +250,12 @@ fun FavoriteFolderContentScreen(
                         // 多选模式下标题显示当前已选文件数量
                         Text("已选 ${selectedFileIds.size} 个")
                     } else {
-                        // 普通模式下显示虚拟文件夹名称
-                        Text(favoriteFolder?.name ?: "收藏内容")
+                        // 普通模式下显示虚拟文件夹名称 + 文件数
+                        Column {
+                            Text(favoriteFolder?.name ?: "收藏内容")
+                            Text("共 ${displayFiles.size} 个文件",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 },
                 navigationIcon = {

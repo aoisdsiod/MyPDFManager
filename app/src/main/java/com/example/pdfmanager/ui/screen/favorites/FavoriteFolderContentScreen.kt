@@ -2,6 +2,9 @@ package com.example.pdfmanager.ui.screen.favorites
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -10,6 +13,7 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckBox
@@ -18,9 +22,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.example.pdfmanager.data.model.FavoriteFolder
@@ -134,6 +142,26 @@ fun FavoriteFolderContentScreen(
     val imageLoader = Coil.imageLoader(context)
     // 懒加载网格的状态控制器，用于监听当前可见项的范围
     val gridState = rememberLazyGridState()
+
+    // ── 滚动指示条 ──
+    val scrollProgress by remember {
+        derivedStateOf {
+            val total = gridState.layoutInfo.totalItemsCount
+            if (total <= 1) return@derivedStateOf 0f
+            val first = gridState.firstVisibleItemIndex.toFloat()
+            (first / (total - 1)).coerceIn(0f, 1f)
+        }
+    }
+    var showBar by remember { mutableStateOf(false) }
+    LaunchedEffect(scrollProgress) {
+        showBar = true
+        delay(1000)
+        showBar = false
+    }
+    val indicatorAlpha by animateFloatAsState(
+        targetValue = if (showBar) 0.5f else 0f,
+        animationSpec = tween(300)
+    )
     
     // 屏幕密度，用于 dp → px 转换（预加载时的图片尺寸计算）
     val density = context.resources.displayMetrics.density
@@ -298,8 +326,9 @@ fun FavoriteFolderContentScreen(
                 Text("此虚拟文件夹暂无匹配的文件")
             }
         } else {
-            // ── 网格视图 ──
-            if (isGridView) {
+            Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+                // ── 网格视图 ──
+                if (isGridView) {
                 val columns = when (thumbSize) {
                     ThumbSize.LARGE -> 2
                     ThumbSize.MEDIUM -> 3
@@ -310,8 +339,7 @@ fun FavoriteFolderContentScreen(
                     columns = GridCells.Fixed(columns),
                     contentPadding = PaddingValues(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(paddingValues)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(displayFiles, key = { it.id }) { pdf ->
                         GridItem(
@@ -338,8 +366,7 @@ fun FavoriteFolderContentScreen(
                     state = gridState,
                     columns = GridCells.Fixed(1),
                     contentPadding = PaddingValues(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(paddingValues)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(displayFiles, key = { it.id }) { pdf ->
                         ListItem(
@@ -357,6 +384,31 @@ fun FavoriteFolderContentScreen(
                         )
                     }
                 }
+            }
+
+            // 滚动指示条
+            if (indicatorAlpha > 0.01f) {
+                val thumbPx = 80f * density
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .width(10.dp)
+                        .padding(vertical = 4.dp)
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val totalH = size.height
+                        val maxY = totalH - thumbPx
+                        val y = maxY * scrollProgress
+                        drawRoundRect(
+                            color = Color.Gray.copy(alpha = indicatorAlpha),
+                            topLeft = Offset(0f, y),
+                            size = Size(size.width, thumbPx),
+                            cornerRadius = CornerRadius(2f, 2f)
+                        )
+                    }
+                }
+            }
             }
         }
     }

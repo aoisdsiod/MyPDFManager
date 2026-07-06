@@ -1,10 +1,15 @@
 package com.example.pdfmanager.ui.screen.favorites
 
 import android.util.Log
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -13,6 +18,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -26,6 +36,7 @@ import com.example.pdfmanager.ui.screen.favorites.OrganizeFolderItem
 import com.example.pdfmanager.ui.screen.favorites.FavoriteFolderItem
 import com.example.pdfmanager.ui.viewmodel.FavoritesViewModel
 import com.google.gson.Gson
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 
@@ -78,6 +89,27 @@ fun FavoritesScreen(
         .collectAsStateWithLifecycle(initialValue = false)
     /** 当前已选中的文件 ID 集合 */
     val selectedFileIds by AppContainer.selectedFileIds.collectAsStateWithLifecycle()
+
+    // ── 滚动指示条 ──
+    val listState = rememberLazyListState()
+    val scrollProgress by remember {
+        derivedStateOf {
+            val total = listState.layoutInfo.totalItemsCount
+            if (total <= 1) return@derivedStateOf 0f
+            val first = listState.firstVisibleItemIndex.toFloat()
+            (first / (total - 1)).coerceIn(0f, 1f)
+        }
+    }
+    var showBar by remember { mutableStateOf(false) }
+    LaunchedEffect(scrollProgress) {
+        showBar = true
+        delay(1000)
+        showBar = false
+    }
+    val indicatorAlpha by animateFloatAsState(
+        targetValue = if (showBar) 0.5f else 0f,
+        animationSpec = tween(300)
+    )
 
     // ── 本地 UI 状态 ─────────────────────────────────────────────
     /** 是否显示「确认删除」对话框 */
@@ -187,58 +219,88 @@ fun FavoritesScreen(
          *   1. OrganizeFolder（自建文件夹）→ 使用 OrganizeFolderItem 渲染
          *   2. FavoriteFolder（虚拟/筛选文件夹）→ 使用 FavoriteFolderItem 渲染
          */
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-        ) {
-            items(items, key = { item ->
-                when (item) {
-                    is OrganizeFolder -> "organize_${item.id}"
-                    is FavoriteFolder -> "favorite_${item.id}"
-                    else -> item.hashCode().toString()
-                }
-            }) { item ->
-                when (item) {
-                    is OrganizeFolder -> {
-                        val idx = items.indexOf(item)
-                        val totalCount = items.size
-                        OrganizeFolderItem(
-                            folder = item,
-                            isMultiSelectMode = isMultiSelectMode,
-                            onClick = { viewModel.openOrganizeFolder(item) },
-                            onLongClick = { if (!isMultiSelectMode) viewModel.showMenu(item) },
-                            onMoveUp = { viewModel.moveItemUp(item) },
-                            onMoveDown = { viewModel.moveItemDown(item) },
-                            index = idx,
-                            totalCount = totalCount
-                        )
+        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(items, key = { item ->
+                    when (item) {
+                        is OrganizeFolder -> "organize_${item.id}"
+                        is FavoriteFolder -> "favorite_${item.id}"
+                        else -> item.hashCode().toString()
                     }
-                    is FavoriteFolder -> {
-                        val idx = items.indexOf(item)
-                        val totalCount = items.size
-                        // 计算文件夹选中状态（需要在协程中计算）
-                        var isSelected by remember { mutableStateOf(false) }
-                        LaunchedEffect(selectedFileIds) {
-                            isSelected = viewModel.isFolderSelected(item)
+                }) { item ->
+                    when (item) {
+                        is OrganizeFolder -> {
+                            val idx = items.indexOf(item)
+                            val totalCount = items.size
+                            OrganizeFolderItem(
+                                folder = item,
+                                isMultiSelectMode = isMultiSelectMode,
+                                onClick = { viewModel.openOrganizeFolder(item) },
+                                onLongClick = { if (!isMultiSelectMode) viewModel.showMenu(item) },
+                                onMoveUp = { viewModel.moveItemUp(item) },
+                                onMoveDown = { viewModel.moveItemDown(item) },
+                                index = idx,
+                                totalCount = totalCount
+                            )
                         }
-                        FavoriteFolderItem(
-                            folder = item,
-                            isMultiSelectMode = isMultiSelectMode,
-                            isSelected = isSelected,
-                            onClick = {
-                                // 多选模式和正常模式：点击卡片都进入文件夹
-                                navController.navigate("favorites/content/${item.id}")
-                            },
-                            onLongClick = { viewModel.showMenu(item) },
-                            onToggleSelection = { 
-                                Log.d("FavoritesScreen", "▶ onToggleSelection 调用! folder=${item.name}, folder.id=${item.id}")
-                                viewModel.toggleFolderSelection(item) 
-                            },
-                            onMoveUp = { viewModel.moveItemUp(item) },
-                            onMoveDown = { viewModel.moveItemDown(item) },
-                            index = idx,
-                            totalCount = totalCount
+
+                        is FavoriteFolder -> {
+                            val idx = items.indexOf(item)
+                            val totalCount = items.size
+                            // 计算文件夹选中状态（需要在协程中计算）
+                            var isSelected by remember { mutableStateOf(false) }
+                            LaunchedEffect(selectedFileIds) {
+                                isSelected = viewModel.isFolderSelected(item)
+                            }
+                            FavoriteFolderItem(
+                                folder = item,
+                                isMultiSelectMode = isMultiSelectMode,
+                                isSelected = isSelected,
+                                onClick = {
+                                    // 多选模式和正常模式：点击卡片都进入文件夹
+                                    navController.navigate("favorites/content/${item.id}")
+                                },
+                                onLongClick = { viewModel.showMenu(item) },
+                                onToggleSelection = {
+                                    Log.d(
+                                        "FavoritesScreen",
+                                        "▶ onToggleSelection 调用! folder=${item.name}, folder.id=${item.id}"
+                                    )
+                                    viewModel.toggleFolderSelection(item)
+                                },
+                                onMoveUp = { viewModel.moveItemUp(item) },
+                                onMoveDown = { viewModel.moveItemDown(item) },
+                                index = idx,
+                                totalCount = totalCount
+                            )
+                        }
+                    }
+                }
+            }
+
+
+            // 滚动指示条（滚动时显现，停止后渐隐）
+            if (indicatorAlpha > 0.01f) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .width(10.dp)
+                        .padding(vertical = 4.dp)
+                ) {
+                    val thumbPx = with(LocalDensity.current) { 80.dp.toPx() }
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val totalH = size.height
+                        val maxY = totalH - thumbPx
+                        val y = maxY * scrollProgress
+                        drawRoundRect(
+                            color = Color.Gray.copy(alpha = indicatorAlpha),
+                            topLeft = Offset(0f, y),
+                            size = Size(size.width, thumbPx),
+                            cornerRadius = CornerRadius(2f, 2f)
                         )
                     }
                 }
@@ -576,3 +638,4 @@ fun FavoritesScreen(
         )
     }
 }
+

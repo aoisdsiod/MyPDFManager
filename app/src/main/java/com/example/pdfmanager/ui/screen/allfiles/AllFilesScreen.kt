@@ -3,6 +3,8 @@ package com.example.pdfmanager.ui.screen.allfiles
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -17,6 +19,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -28,9 +32,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -127,6 +135,33 @@ fun AllFilesScreen(
     val imageLoader = Coil.imageLoader(context)
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
+
+    // ── 滚动指示条 ──
+    val scrollProgress by remember {
+        derivedStateOf {
+            if (isGridView) {
+                val total = gridState.layoutInfo.totalItemsCount
+                if (total <= 1) return@derivedStateOf 0f
+                val first = gridState.firstVisibleItemIndex.toFloat()
+                (first / (total - 1)).coerceIn(0f, 1f)
+            } else {
+                val total = listState.layoutInfo.totalItemsCount
+                if (total <= 1) return@derivedStateOf 0f
+                val first = listState.firstVisibleItemIndex.toFloat()
+                (first / (total - 1)).coerceIn(0f, 1f)
+            }
+        }
+    }
+    var showBar by remember { mutableStateOf(false) }
+    LaunchedEffect(scrollProgress) {
+        showBar = true
+        delay(1000)
+        showBar = false
+    }
+    val indicatorAlpha by animateFloatAsState(
+        targetValue = if (showBar) 0.5f else 0f,
+        animationSpec = tween(300)
+    )
     // 屏幕密度（用于 dp → px 转换）
     val density = context.resources.displayMetrics.density
 
@@ -447,6 +482,30 @@ fun AllFilesScreen(
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // 滚动指示条（滚动时显现，停止后渐隐）
+                    if (indicatorAlpha > 0.01f) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                                .width(10.dp)
+                                .padding(vertical = 4.dp)
+                        ) {
+                            val thumbPx = 80f * density
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val totalH = size.height
+                                val maxY = totalH - thumbPx
+                                val y = maxY * scrollProgress
+                                drawRoundRect(
+                                    color = Color.Gray.copy(alpha = indicatorAlpha),
+                                    topLeft = Offset(0f, y),
+                                    size = Size(size.width, thumbPx),
+                                    cornerRadius = CornerRadius(2f, 2f)
+                                )
                             }
                         }
                     }

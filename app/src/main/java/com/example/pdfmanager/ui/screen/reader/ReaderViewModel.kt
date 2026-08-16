@@ -304,7 +304,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         notes = entity.notes,
                         isFavorite = entity.isFavorite,
                         lastReadPage = entity.lastReadPage,
-                        thumbnailPath = entity.thumbnailPath
+                        thumbnailPath = entity.thumbnailPath,
+                        lastOpenedTime = entity.lastOpenedTime
                     )
                 }
                 _pdfFile.value = pdfFile
@@ -580,8 +581,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
      * 将当前阅读的页数（1-based）保存到 Room 数据库的 PdfFileEntity 中。
      * 此方法在阅读器页面销毁时调用，确保下次打开时能恢复阅读位置。
      *
-     * 使用 runBlocking(Dispatchers.IO) 确保同步完成保存操作，
-     * 避免在页面销毁时异步协程来不及执行。
+     * 使用 viewModelScope.launch(Dispatchers.IO) 异步执行数据库写入，
+     * 避免在页面销毁时阻塞主线程（旧实现用 runBlocking 同步等待，
+     * 数据库较大时会导致退出阅读器卡顿甚至 ANR）。
      *
      * 【调用位置】
      * - ReaderScreenV2.kt（第 91 行）：DisposableEffect 的 onDispose 中调用
@@ -593,16 +595,16 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
      * - Activity 被系统销毁（杀后台）
      * - 页面被回收（Composition 被销毁）
      *
-     * @return 无返回值，同步执行
+     * @return 无返回值，异步执行
      */
     fun saveCurrentPage() {
         val pageIndex = _currentPage.value
         val fileId = currentFileId
         if (fileId.isEmpty()) return
         
-        // ✅ 同步保存到数据库（使用 runBlocking 确保完成）
-        try {
-            kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+        // ✅ 异步保存到数据库（viewModelScope 会随 ViewModel 销毁自动取消）
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
                 val entity = AppContainer.database.pdfFileDao().getById(fileId)
                 if (entity != null) {
                     entity.lastReadPage = pageIndex + 1
@@ -611,9 +613,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     android.util.Log.w("ReaderViewModel", "saveCurrentPage: 未找到实体，fileId=$fileId")
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("ReaderViewModel", "saveCurrentPage: 保存失败", e)
             }
-        } catch (e: Exception) {
-            android.util.Log.e("ReaderViewModel", "saveCurrentPage: 保存失败", e)
         }
     }
 

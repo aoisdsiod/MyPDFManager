@@ -32,6 +32,7 @@ import com.example.pdfmanager.data.local.ThumbnailGenerator
 import com.example.pdfmanager.data.model.PdfFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * PDF 缩略图组件
@@ -50,6 +51,12 @@ import kotlinx.coroutines.withContext
  * - 当发现缩略图文件已存在但数据库标记 thumbnailGenerated ≠ 1 时，自动修正为 1
  * - 当发现缩略图文件不存在但数据库标记 thumbnailGenerated ≠ 0 时，自动重置为 0
  *   （修复因异常中断导致的状态不一致问题）
+ *
+ * ====== 写库去重（性能优化） ======
+ * - 容错修正 thumbnailGenerated 会触发数据库写入；列表滚动时每个可见卡片都会
+ *   进入此逻辑，导致高频写库（文件多时每次滑动触发几十次 UPDATE）。
+ * - 使用会话级 Set（syncedThumbnailIds）记录"本次运行已同步过"的文件 ID，
+ *   同一文件只写一次数据库；滚动往返不再重复写入，显著降低 WAL 增长与损坏风险。
  *
  * ====== 调用位置 ======
  * - AllFilesScreen.kt           → 全部文件列表/网格视图
@@ -103,7 +110,8 @@ fun PdfThumbnail(
             isLoading = false
 
             // ✅ 如果之前 thumbnailGenerated != 1，更新为 1（容错）
-            if (pdfFile.thumbnailGenerated != 1) {
+            // 会话级去重：同一文件本次运行只写一次，滚动往返不再重复写库
+            if (pdfFile.thumbnailGenerated != 1 && markThumbnailSynced(pdfFile.id)) {
                 try {
                     com.example.pdfmanager.data.repository.AppContainer.pdfRepository
                         .updateThumbnailGeneratedStatus(pdfFile.id, 1)
@@ -116,8 +124,8 @@ fun PdfThumbnail(
             isLoading = false
             loadError = true
 
-            // ✅ 重置 thumbnailGenerated 为 0
-            if (pdfFile.thumbnailGenerated != 0) {
+            // ✅ 重置 thumbnailGenerated 为 0（会话级去重，同文件只写一次）
+            if (pdfFile.thumbnailGenerated != 0 && markThumbnailSynced(pdfFile.id)) {
                 try {
                     com.example.pdfmanager.data.repository.AppContainer.pdfRepository
                         .updateThumbnailGeneratedStatus(pdfFile.id, 0)
@@ -201,4 +209,30 @@ fun PdfThumbnail(
             }
         }
     }
+}
+
+/**
+ * 缩略图状态同步去重集合（会话级）。
+ *
+ * 记录"本次 App 运行中已同步过 thumbnailGenerated 状态"的 PDF 文件 ID。
+ * 文件列表滚动时，同一文件会多次进入 PdfThumbnail 的容错逻辑，若每次都写库
+ * 会造成高频数据库写入；通过此集合保证同一文件只同步一次。
+ *
+ * 说明：
+ * - 使用 ConcurrentHashMap 作为并发安全的 Set（value 恒为 true）
+ * - 集合随进程生命周期存在，App 重启后自动清空（重新允许同步）
+ */
+private val syncedThumbnailIds = ConcurrentHashMap.newKeySet<String>()
+
+/**
+ * 尝试将指定文件标记为"已同步缩略图状态"。
+ *
+ * 线程安全：仅当集合中尚不存在该 ID 时才加入并返回 true（首次同步），
+ * 已存在则返回 false（跳过写入）。此原子性保证并发滚动时不会重复写库。
+ *
+ * @param pdfId PDF 文件 ID
+ * @return true=本次应执行数据库写入；false=已同步过，跳过
+ */
+private fun markThumbnailSynced(pdfId: String): Boolean {
+    return syncedThumbnailIds.add(pdfId)
 }

@@ -7,9 +7,12 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
-import com.example.pdfmanager.ui.theme.MyPDFManagerTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -18,17 +21,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
 import coil.Coil
 import coil.ImageLoader
 import coil.compose.LocalImageLoader
+import com.example.pdfmanager.data.local.DatabaseBackupManager
 import com.example.pdfmanager.data.local.PreferencesManager
 import com.example.pdfmanager.data.repository.AppContainer
 import com.example.pdfmanager.ui.component.PdfFetcher
 import com.example.pdfmanager.ui.navigation.AppNavGraph
+import com.example.pdfmanager.ui.theme.MyPDFManagerTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -106,6 +113,22 @@ class MainActivity : ComponentActivity() {
     }
 
     // =========================================================================
+    // 属性：切换库前自动备份的加载框状态
+    // =========================================================================
+    /**
+     * 是否正在备份当前数据库（切换库文件夹时显示"正在备份数据库"加载框）。
+     *
+     * 使用场景：
+     * - 用户在设置页点击"更换库文件夹"并选定新目录后，[saveAndRecreate] 在
+     *   切换数据库前自动备份当前库，期间将此状态置为 true，Compose 弹窗提示。
+     * - 备份完成后置为 false，继续执行切换。
+     *
+     * 说明：该状态在 Compose 外部（Activity 成员）维护，通过 setContent 中的
+     * [androidx.compose.runtime.collectAsState] 观察以驱动加载框显示。
+     */
+    private val isBackingUp = mutableStateOf(false)
+
+    // =========================================================================
     // 生命周期方法：onCreate
     // =========================================================================
     /**
@@ -181,9 +204,83 @@ class MainActivity : ComponentActivity() {
                                 openDocumentTreeLauncher.launch(null)
                             }
                         )
+
+                        // ── 数据库损坏提醒弹窗 ──
+                        // 观察 AppContainer 的损坏事件，检测到数据库损坏时弹出提示
+                        val corruptionEvent by AppContainer.databaseCorruptionEvent.collectAsState()
+                        corruptionEvent?.let { event ->
+                            AlertDialog(
+                                onDismissRequest = {
+                                    AppContainer.consumeDatabaseCorruptionEvent()
+                                },
+                                title = {
+                                    Text("数据库损坏提醒")
+                                },
+                                text = {
+                                    Text(buildCorruptionMessage(event))
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            AppContainer.consumeDatabaseCorruptionEvent()
+                                        }
+                                    ) {
+                                        Text("知道了")
+                                    }
+                                }
+                            )
+                        }
+
+                        // ── 切换库前备份加载框 ──
+                        // 设置页"更换库文件夹"选定新目录后，自动备份当前库期间弹出提示
+                        if (isBackingUp.value) {
+                            AlertDialog(
+                                onDismissRequest = { /* 备份期间禁止关闭 */ },
+                                title = {
+                                    Text("正在备份数据库")
+                                },
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Text("正在备份当前数据库，请稍候…")
+                                    }
+                                },
+                                confirmButton = {},
+                                dismissButton = {}
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+
+    // =========================================================================
+    // 私有方法：buildCorruptionMessage
+    // =========================================================================
+    /**
+     * 构建数据库损坏提醒弹窗的提示文本。
+     *
+     * 根据损坏事件中的恢复结果，向用户说明当前数据库的处理情况：
+     * - 已恢复：告知用户数据已从最近备份恢复，现场备份文件名
+     * - 未恢复：告知用户未找到可用备份，已重建空库，并提醒及时导出备份
+     *
+     * @param event 数据库损坏事件（含损坏库名、broken 备份文件名、恢复结果）
+     * @return 弹窗展示的提示文本
+     */
+    private fun buildCorruptionMessage(event: AppContainer.DatabaseCorruptionEvent): String {
+        val dbInfo = "数据库文件：${event.dbFileName}"
+        val backupInfo = event.brokenBackupFileName?.let { "损坏现场已备份为：$it" }
+            ?: "损坏现场备份失败（库文件夹可能未绑定或无法写入）"
+        return if (event.restored) {
+            "$dbInfo\n\n检测到数据库损坏，已自动从最近的备份恢复数据。\n\n$backupInfo"
+        } else {
+            "$dbInfo\n\n检测到数据库损坏，且 backup 目录中没有可用的正常备份，已重建空库。\n\n$backupInfo\n\n建议尽快导出数据库备份，避免数据再次丢失。"
         }
     }
 
@@ -195,9 +292,11 @@ class MainActivity : ComponentActivity() {
      *
      * 调用时机：
      * - 用户在 SAF 文件夹选择器中选定新库目录后，由 [openDocumentTreeLauncher]
-     *   的回调中调用。
+     *   的回调中调用（设置页"更换库文件夹"入口）。
      *
      * 执行流程：
+     * 0. 自动备份当前正在使用的数据库（显示"正在备份数据库"加载框），
+     *    防止切换后原库数据无法找回。
      * 1. 将新的 URI 字符串存入 [PreferencesManager]，作为持久化的库路径。
      * 2. 调用 [AppContainer.switchLibrary] 关闭旧 Room 数据库实例，释放连接池，
      *    然后使用新 URI 初始化新的数据库实例。
@@ -210,18 +309,33 @@ class MainActivity : ComponentActivity() {
      */
     private fun saveAndRecreate(newUri: Uri) {
         lifecycleScope.launch {
-            // 将新库 URI 持久化到 SharedPreferences
+            // 0. 切换前自动备份当前正在使用的数据库
+            // 备份期间弹出"正在备份数据库…"加载框提示用户；
+            // 若当前没有打开的数据库（如首次绑定），backupCurrentDatabase 直接返回
+            isBackingUp.value = true
+            try {
+                val backupResult = DatabaseBackupManager.backupCurrentDatabase(this@MainActivity)
+                if (backupResult.success) {
+                    Log.d("MainActivity", "切换前已自动备份当前库: ${backupResult.fileName}")
+                } else {
+                    Log.w("MainActivity", "切换前自动备份当前库失败: ${backupResult.message}")
+                }
+            } finally {
+                isBackingUp.value = false
+            }
+
+            // 1. 将新库 URI 持久化到 SharedPreferences
             AppContainer.preferencesManager.saveLibraryUri(newUri.toString())
-            // 关闭旧数据库，使用新 URI 初始化新数据库
+            // 2. 关闭旧数据库，使用新 URI 初始化新数据库
             AppContainer.switchLibrary(this@MainActivity, newUri.toString())
 
-            // 切换到 IO 线程创建必要的子文件夹
+            // 3. 切换到 IO 线程创建必要的子文件夹
             withContext(Dispatchers.IO) {
                 createRequiredFolders(newUri)
             }
 
-            // 使用 finish + startActivity 替代 recreate()，
-            // 确保 ViewModel 被完全销毁并重建，避免数据残留
+            // 4. 使用 finish + startActivity 替代 recreate()，
+            //    确保 ViewModel 被完全销毁并重建，避免数据残留
             val intent = intent
             finish()
             startActivity(intent)

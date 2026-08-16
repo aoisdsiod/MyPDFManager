@@ -273,6 +273,15 @@ interface PdfFileDao {
     @Query("UPDATE pdf_files SET thumbnail_path = :path WHERE id = :fileId")
     suspend fun updateThumbnailPath(fileId: String, path: String?)
 
+    /**
+     * 更新文件的最后打开时间
+     *
+     * @param fileId PDF 文件 ID
+     * @param time   打开的 Unix 毫秒时间戳（System.currentTimeMillis()）
+     */
+    @Query("UPDATE pdf_files SET last_opened_time = :time WHERE id = :fileId")
+    suspend fun updateLastOpenedTime(fileId: String, time: Long)
+
     // ── 文件名查询（轻量操作，无需加载完整对象）───────────────────────────
 
     /**

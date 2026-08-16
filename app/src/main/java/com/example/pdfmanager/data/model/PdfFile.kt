@@ -43,6 +43,7 @@ data class PdfFile(
     val notes: String = "",
     val isFavorite: Boolean = false,
     val lastReadPage: Int = 0,
+    val lastOpenedTime: Long = 0L,
     val thumbnailPath: String? = null,
     val thumbnailGenerated: Int = 0
 ) {

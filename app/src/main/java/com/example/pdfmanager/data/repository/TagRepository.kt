@@ -10,6 +10,7 @@ import com.example.pdfmanager.data.model.TagCategoryEntity
 import com.example.pdfmanager.data.model.CategoryTagEntity
 import com.example.pdfmanager.data.model.TagValue
 import com.example.pdfmanager.data.model.PdfTagEntity
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -142,13 +143,19 @@ class TagRepository(
      * - 标签值变化后自动保存
      */
     suspend fun saveCategories() = withContext(Dispatchers.IO) {
-        try {
+        // 使用 Room 事务包裹整个"先删后插"过程：
+        // 每个类别都是"删除旧标签 → 插入新标签"，多个类别连续执行。
+        // 若无事务保护，中途崩溃会留下部分类别已更新、部分未更新的不一致状态；
+        // 事务保证要么全部成功，要么全部回滚到写之前的状态。
+        // 注意：异常向外抛出（而非吞掉），使上层调用（如 renameTagValue 的
+        // 组合事务）能感知失败并整体回滚，保证级联操作的一致性。
+        database.withTransaction {
             // Room 的 REPLACE 策略会自动处理插入/更新
             val categories = _categories.value
             for (category in categories) {
                 val categoryEntity = TagCategoryEntity.fromTagCategory(category)
                 tagCategoryDao.insert(categoryEntity)
-                
+
                 // 先删除旧的标签，再插入新的
                 categoryTagDao.deleteByCategoryId(category.id)
                 val tagEntities = category.tags.map { tagValue ->
@@ -156,10 +163,8 @@ class TagRepository(
                 }
                 categoryTagDao.insertAll(tagEntities)
             }
-            Log.d(TAG, "保存了 ${categories.size} 个标签类别")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to save categories", e)
         }
+        Log.d(TAG, "保存了 ${_categories.value.size} 个标签类别")
     }
     
     // ── 标签类别 CRUD 方法 ─────────────────────────────────────
@@ -338,14 +343,23 @@ class TagRepository(
             return false
         }
         
-        // 写入 Room（级联删除 category_tags 和 pdf_tags）
-        tagCategoryDao.deleteById(categoryId)
-        
-        updatedList.removeAt(index)
-        _categories.value = updatedList
-        
-        Log.d(TAG, "删除类别: $categoryId")
-        return true
+        // 写入 Room（级联删除：类别本身 + 类别下的标签值 + PDF 上的标签关联）
+        // 三步放在同一事务中，保证要么全部删除成功，要么全部回滚，
+        // 避免留下"类别删了但标签值/PDF 关联还在"的孤儿数据。
+        return try {
+            database.withTransaction {
+                tagCategoryDao.deleteById(categoryId)                    // 1. 删除类别
+                categoryTagDao.deleteByCategoryId(categoryId)             // 2. 删除该类别的所有标签值
+                pdfTagDao.deleteByCategoryId(categoryId)                  // 3. 删除 PDF 上该类别的标签关联
+            }
+            updatedList.removeAt(index)
+            _categories.value = updatedList
+            Log.d(TAG, "删除类别: $categoryId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "删除类别失败: $categoryId", e)
+            false
+        }
     }
     
     // ── 排序（上移/下移）────────────────────────────
@@ -383,9 +397,14 @@ class TagRepository(
         updatedList[index - 1] = above.copy(sortOrder = current.sortOrder)
         _categories.value = updatedList
         
-        saveCategories()
-        Log.d(TAG, "上移类别: ${current.name}")
-        return true
+        return try {
+            saveCategories()
+            Log.d(TAG, "上移类别: ${current.name}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "上移类别失败: ${current.name}", e)
+            false
+        }
     }
     
     /**
@@ -421,9 +440,14 @@ class TagRepository(
         updatedList[index + 1] = below.copy(sortOrder = current.sortOrder)
         _categories.value = updatedList
         
-        saveCategories()
-        Log.d(TAG, "下移类别: ${current.name}")
-        return true
+        return try {
+            saveCategories()
+            Log.d(TAG, "下移类别: ${current.name}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "下移类别失败: ${current.name}", e)
+            false
+        }
     }
     
     /**
@@ -534,11 +558,16 @@ class TagRepository(
         updatedList[index] = updatedList[index].copy(tags = newTags)
         _categories.value = updatedList
         
-        // 写入 Room
-        saveCategories()
-        
-        Log.d(TAG, "添加标签值: $tagValue to category $categoryId")
-        return true
+        // 写入 Room（失败时从数据库重新加载，回滚内存中的修改）
+        return try {
+            saveCategories()
+            Log.d(TAG, "添加标签值: $tagValue to category $categoryId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "添加标签值失败: $tagValue", e)
+            loadCategories()
+            false
+        }
     }
     
     /**
@@ -592,13 +621,23 @@ class TagRepository(
         _categories.value = updatedList
         
         // 写入 Room（级联更新 pdf_tags）
-        saveCategories()
-        // 级联更新 pdf_tags 中的 tag_value
-        val pdfTagDao = database.pdfTagDao()
-        pdfTagDao.updateTagValue(categoryId, oldValue, newValue)
-        
-        Log.d(TAG, "重命名标签值: $oldValue -> $newValue")
-        return true
+        // 两步操作放在同一事务中：先重写类别表，再级联更新 pdf_tags 表。
+        // 若无事务保护，中途失败会导致"类别表已改名但 pdf_tags 还是旧值"的不一致；
+        // 事务保证两步要么全部成功，要么全部回滚。
+        return try {
+            database.withTransaction {
+                saveCategories()
+                // 级联更新 pdf_tags 中的 tag_value
+                val pdfTagDao = database.pdfTagDao()
+                pdfTagDao.updateTagValue(categoryId, oldValue, newValue)
+            }
+            Log.d(TAG, "重命名标签值: $oldValue -> $newValue")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "重命名标签值失败: $oldValue -> $newValue", e)
+            loadCategories()
+            false
+        }
     }
     
     /**
@@ -631,15 +670,20 @@ class TagRepository(
         updatedList[index] = updatedList[index].copy(tags = newTags)
         _categories.value = updatedList
         
-        // 写入 Room（级联删除 pdf_tags）
-        saveCategories()
-
-
-        // 同步删除 pdf_tags 表中的关联记录
-        pdfTagDao.deleteByCategoryIdAndTagValue(categoryId, tagValue)
-        
-        Log.d(TAG, "删除标签值: $tagValue from category $categoryId")
-        return true
+        // 写入 Room（重写类别表 + 级联删除 pdf_tags 关联，放在同一事务中保证一致性）
+        return try {
+            database.withTransaction {
+                saveCategories()
+                // 同步删除 pdf_tags 表中的关联记录
+                pdfTagDao.deleteByCategoryIdAndTagValue(categoryId, tagValue)
+            }
+            Log.d(TAG, "删除标签值: $tagValue from category $categoryId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "删除标签值失败: $tagValue", e)
+            loadCategories()
+            false
+        }
     }
     
     /**
@@ -814,14 +858,21 @@ class TagRepository(
     ) = withContext(Dispatchers.IO) {
         Log.d(TAG, "updateCategoryTagValues: categoryId=$categoryId")
         
-        // 删除旧标签值的关系（只删除那些不在新列表中的）
-        oldValues.forEach { oldValue ->
-            if (!newValues.contains(oldValue)) {
-                pdfTagDao.deleteByCategoryIdAndTagValue(categoryId, oldValue)
-                Log.d(TAG, "updateCategoryTagValues: 删除旧标签值 $oldValue")
+        try {
+            // 删除旧标签值的关系（只删除那些不在新列表中的）
+            // 放在同一事务中：多个标签值逐条删除，中途失败时全部回滚，
+            // 避免留下部分标签已删、部分未删的不一致状态。
+            database.withTransaction {
+                oldValues.forEach { oldValue ->
+                    if (!newValues.contains(oldValue)) {
+                        pdfTagDao.deleteByCategoryIdAndTagValue(categoryId, oldValue)
+                        Log.d(TAG, "updateCategoryTagValues: 删除旧标签值 $oldValue")
+                    }
+                }
             }
+            Log.d(TAG, "updateCategoryTagValues: 完成")
+        } catch (e: Exception) {
+            Log.e(TAG, "updateCategoryTagValues: 失败", e)
         }
-        
-        Log.d(TAG, "updateCategoryTagValues: 完成")
     }
 }

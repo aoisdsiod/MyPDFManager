@@ -325,7 +325,10 @@ data class PdfFileEntity(
      * @see PdfFileDao.updateThumbnailGenerated 更新生成状态
      */
     @ColumnInfo(name = "thumbnail_generated", defaultValue = "0")
-    val thumbnailGenerated: Int = 0
+    val thumbnailGenerated: Int = 0,
+
+    @ColumnInfo(name = "last_opened_time", defaultValue = "0")
+    val lastOpenedTime: Long = 0L
 ) {
     /**
      * ## toPdfFile — Entity 转 Domain Model
@@ -375,6 +378,7 @@ data class PdfFileEntity(
             notes = notes,
             isFavorite = isFavorite,
             lastReadPage = lastReadPage,
+            lastOpenedTime = lastOpenedTime,
             thumbnailPath = thumbnailPath,
             thumbnailGenerated = thumbnailGenerated
         )
@@ -433,7 +437,8 @@ data class PdfFileEntity(
                 isFavorite = pdf.isFavorite,
                 lastReadPage = pdf.lastReadPage,
                 relativePath = relativePath,
-                thumbnailGenerated = pdf.thumbnailGenerated
+                thumbnailGenerated = pdf.thumbnailGenerated,
+                lastOpenedTime = pdf.lastOpenedTime
             )
         }
     }

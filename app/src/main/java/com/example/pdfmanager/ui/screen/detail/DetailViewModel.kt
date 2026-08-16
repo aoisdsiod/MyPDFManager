@@ -239,6 +239,11 @@ class DetailViewModel(
                 val pdfFile = entity.toPdfFile(tags.map { Tag(it.categoryId, it.tagValue) })
                 _pdfFile.value = pdfFile
 
+                // 更新最后打开时间
+                val now = System.currentTimeMillis()
+                AppContainer.database.pdfFileDao().updateLastOpenedTime(fileId, now)
+                Log.d("DetailViewModel", "lastOpenedTime updated: fileId=$fileId, time=$now")
+
                 Log.d("DetailViewModel", "loadFile: 从 Room 读取 lastReadPage=${pdfFile.lastReadPage}, uri=${pdfFile.uri}")
             } else {
                 Log.w("DetailViewModel", "loadFile: pdfFile 为 null, fileId=$fileId")
@@ -397,10 +402,9 @@ class DetailViewModel(
      * 更新当前 PDF 的笔记/备注内容
      *
      * 功能说明：
-     *   保存用户在详情页面编辑的笔记/备注内容，采用双重写入策略确保数据一致性：
-     *   1. 通过 pdfRepository.updateFile() 更新内存中的 PdfFile 对象（上层抽象）
-     *   2. 通过 pdfFileDao.update() 直接写入 Room 数据库（底层持久化）
-     *   内存中的 _pdfFile 也通过 copy(notes = ...) 同步更新以驱动 UI 刷新。
+     *   保存用户在详情页面编辑的笔记/备注内容：
+     *   1. 通过 copy(notes = ...) 更新内存中的 _pdfFile（驱动 UI 刷新）
+     *   2. 通过 pdfRepository.updateFile() 持久化（内部完成 Room 写入）
      *
      * 调用位置：
      *   DetailScreen 中的笔记编辑框（TextField），在用户完成编辑并确认时调用。
@@ -412,8 +416,7 @@ class DetailViewModel(
      * 数据流：
      *   用户输入 → updateNotes(notes)
      *     → _pdfFile.value = current.copy(notes = notes) [更新内存状态 → UI 刷新]
-     *     → pdfRepository.updateFile(updated) [更新上层抽象层]
-     *     → pdfFileDao.getById() + pdfFileDao.update() [双重写入 Room 持久化]
+     *     → pdfRepository.updateFile(updated) [持久化到 Room]
      *
      * @param notes 笔记内容字符串，用户输入的完整笔记文本
      */
@@ -426,15 +429,10 @@ class DetailViewModel(
             val updated = current.copy(notes = notes)
             _pdfFile.value = updated
 
-            // 步骤 2：通过 Repository 更新上层缓存数据
+            // 步骤 2：通过 Repository 更新（内部已完成 Room 持久化）
+            // 注意：pdfRepository.updateFile() 内部会调用 PdfFileEntity.fromPdfFile()
+            // 并写入数据库，因此不需要再通过 pdfFileDao 二次写入（避免重复写库）。
             pdfRepository.updateFile(updated)
-
-            // 步骤 3：通过 DAO 直接写入 Room 数据库进行持久化
-            val entity = pdfFileDao.getById(current.id)
-            if (entity != null) {
-                val updatedEntity = entity.copy(notes = notes)
-                pdfFileDao.update(updatedEntity)
-            }
 
             Log.d("DetailViewModel", "updateNotes: 备注保存完成")
         }
@@ -445,10 +443,8 @@ class DetailViewModel(
      *
      * 功能说明：
      *   记录用户最近一次阅读到的页码，以便下次打开 PDF 时能跳转到该位置继续阅读。
-     *   采用双重写入策略确保数据一致性：
      *   1. 更新 _pdfFile 和 _lastReadPage 内存状态（立即驱动 UI 刷新）
-     *   2. 通过 pdfRepository.updateFile() 更新上层抽象层
-     *   3. 通过 pdfFileDao.update() 直接写入 Room 数据库持久化
+     *   2. 通过 pdfRepository.updateFile() 持久化（内部完成 Room 写入）
      *
      * 调用位置：
      *   PDF 阅读器页面（PdfViewerScreen），在页面销毁、切换页面或定时保存时调用。
@@ -463,8 +459,7 @@ class DetailViewModel(
      *   阅读器翻页 → saveLastReadPage(page)
      *     → _pdfFile.value = current.copy(lastReadPage = page) [更新内存 → UI 刷新]
      *     → _lastReadPage.value = page [更新页码专用状态 → UI 刷新]
-     *     → pdfRepository.updateFile(updated) [更新上层抽象层]
-     *     → pdfFileDao.getById() + pdfFileDao.update() [双重写入 Room 持久化]
+     *     → pdfRepository.updateFile(updated) [持久化到 Room]
      *
      * @param page 当前阅读到的页码（从 0 开始计数）
      */
@@ -480,15 +475,10 @@ class DetailViewModel(
             // 步骤 2：更新专用的页码 StateFlow → 阅读器界面可以立即获取新页码
             _lastReadPage.value = page
 
-            // 步骤 3：通过 Repository 更新上层缓存数据
+            // 步骤 3：通过 Repository 更新（内部已完成 Room 持久化）
+            // 注意：pdfRepository.updateFile() 内部会调用 PdfFileEntity.fromPdfFile()
+            // 并写入数据库，因此不需要再通过 pdfFileDao 二次写入（避免重复写库）。
             pdfRepository.updateFile(updated)
-
-            // 步骤 4：通过 DAO 直接写入 Room 数据库进行持久化
-            val entity = pdfFileDao.getById(current.id)
-            if (entity != null) {
-                val updatedEntity = entity.copy(lastReadPage = page)
-                pdfFileDao.update(updatedEntity)
-            }
 
             Log.d("DetailViewModel", "saveLastReadPage: 页码保存完成")
         }

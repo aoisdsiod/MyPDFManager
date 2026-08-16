@@ -1,6 +1,7 @@
 package com.example.pdfmanager.data.repository
 
 import android.content.Context
+import com.example.pdfmanager.data.local.DatabaseBackupManager
 import com.example.pdfmanager.data.local.FileScanner
 import com.example.pdfmanager.data.local.PdfManagerDatabase
 import com.example.pdfmanager.data.local.PreferencesManager
@@ -182,6 +183,15 @@ object AppContainer {
     val libraryRefreshTick = MutableStateFlow(0L)
 
     /**
+     * 数据库损坏事件
+     * 用途：检测到数据库损坏时设置，供 MainActivity 观察并弹出提醒对话框
+     * 流程：DatabaseBackupManager 检测到损坏 → 设置此事件 → MainActivity 弹窗 → 消费清除
+     * 注意：可能因损坏恢复/重建而连续触发，UI 展示后应立即调用 consumeDatabaseCorruptionEvent() 清除
+     */
+    private val _databaseCorruptionEvent = MutableStateFlow<DatabaseCorruptionEvent?>(null)
+    val databaseCorruptionEvent: StateFlow<DatabaseCorruptionEvent?> = _databaseCorruptionEvent.asStateFlow()
+
+    /**
      * 缩略图生成结果数据类
      * 
      * @property generated 成功生成的数量
@@ -193,6 +203,46 @@ object AppContainer {
         val total: Int,
         val failed: Int
     )
+
+    /**
+     * 数据库损坏事件数据类
+     * 
+     * @property dbFileName 发生损坏的数据库文件名（如 "pdf_manager_12345.db"）
+     * @property brokenBackupFileName 损坏现场备份文件名（如 "2026_07_24_broken_backup_1750000000.db"）
+     * @property restored 是否已从最近正常备份自动恢复（true=已恢复，false=未找到备份已重建空库）
+     */
+    data class DatabaseCorruptionEvent(
+        val dbFileName: String,
+        val brokenBackupFileName: String?,
+        val restored: Boolean
+    )
+
+    /**
+     * 报告数据库损坏事件（供 DatabaseBackupManager 调用）
+     * 
+     * 调用位置：
+     * - DatabaseBackupManager.quickCheckAndBackup() - 启动完整性检查发现损坏
+     * - DatabaseBackupManager.exportBrokenBackup() 内部触发（损坏拦截工厂路径）
+     * 
+     * @param event 损坏事件信息
+     */
+    fun reportDatabaseCorruption(event: DatabaseCorruptionEvent) {
+        _databaseCorruptionEvent.value = event
+    }
+
+    /**
+     * 消费数据库损坏事件（展示后清除）
+     * 
+     * 调用位置：
+     * - MainActivity - 弹窗展示并处理用户点击后调用
+     * 
+     * @return 已消费的事件（如果有）
+     */
+    fun consumeDatabaseCorruptionEvent(): DatabaseCorruptionEvent? {
+        val event = _databaseCorruptionEvent.value
+        _databaseCorruptionEvent.value = null
+        return event
+    }
 
     // ── 筛选结果管理方法 ─────────────────────────────────────
     
@@ -282,12 +332,20 @@ object AppContainer {
         tagRepository = TagRepository(database)
         // 先初始化 searchIndexRepository，再传入 pdfRepository
         searchIndexRepository = SearchIndexRepository()
-        pdfRepository = PdfRepository(appContext, fileScanner, preferencesManager, searchIndexRepository, database.pdfFileDao(), database.pdfTagDao())
+        pdfRepository = PdfRepository(appContext, fileScanner, preferencesManager, searchIndexRepository, database, database.pdfFileDao(), database.pdfTagDao())
         shareRepository = ShareRepository(appContext)
         favoritesRepository = FavoritesRepository(database.favoritesDao())
         conversionRepository = ConversionRepository(appContext)
 
         initialized = true
+
+        // ── 启动时主动检查数据库完整性 ──
+        // 对当前数据库执行 PRAGMA quick_check，若检测到损坏则自动导出
+        // broken 现场备份（数据库打开异常时 CorruptionAwareOpenHelperFactory
+        // 也会拦截并备份，这里是主动探测的双保险）
+        MainScope().launch {
+            DatabaseBackupManager.quickCheckAndBackup(appContext, dbName)
+        }
     }
 
     // ── 切换库文件夹 ─────────────────────────────────────
@@ -301,9 +359,14 @@ object AppContainer {
      * 3. 重新初始化所有 Repository（使用新数据库）
      * 4. 触发扫描新库文件夹
      * 
+     * 注意：切换前的自动备份由调用方负责
+     * （DatabaseManageViewModel.switchToDatabase / importDatabase 会先备份当前库），
+     * 本方法不包含备份逻辑，避免设置页换库等场景重复备份。
+     * 
      * 调用位置：
      * - SettingsScreen.onChangeLibrary() - 用户点击"更改库文件夹"时调用
      * - MainActivity.onActivityResult() - SAF 选择完成后调用
+     * - DatabaseManageViewModel.importDatabase() - 导入数据库后切换
      * 
      * 使用场景：
      * - 用户更换 PDF 库文件夹
@@ -320,7 +383,7 @@ object AppContainer {
         val dbExists = dbFile.exists()
         
         Log.d("AppContainer", "切换库文件夹：数据库名=$dbName，已存在=$dbExists")
-        
+
         // 1. 关闭旧数据库
         PdfManagerDatabase.closeDatabase()
         initialized = false
@@ -335,7 +398,7 @@ object AppContainer {
         runBlocking { preferencesManager.saveDatabaseUriMapping(dbName, newLibraryUri) }
         tagRepository = TagRepository(database)
         searchIndexRepository = SearchIndexRepository()
-        pdfRepository = PdfRepository(appContext, fileScanner, preferencesManager, searchIndexRepository, database.pdfFileDao(), database.pdfTagDao())
+        pdfRepository = PdfRepository(appContext, fileScanner, preferencesManager, searchIndexRepository, database, database.pdfFileDao(), database.pdfTagDao())
         favoritesRepository = FavoritesRepository(database.favoritesDao())
         // conversionRepository 和 shareRepository 不需要重新初始化（不依赖数据库）
         
@@ -347,6 +410,11 @@ object AppContainer {
             // 5. 触发库切换刷新信号，通知 AllFilesViewModel 重新绑定到新 PdfRepository
             //    同时切换后 AllFilesScreen 中 _needsLibrarySetup 会被重新检查
             libraryRefreshTick.value = System.currentTimeMillis()
+        }
+
+        // 6. 切换后对新库主动执行完整性检查（损坏时自动备份现场）
+        MainScope().launch {
+            DatabaseBackupManager.quickCheckAndBackup(appContext, dbName)
         }
         
         Log.d("AppContainer", "已切换到新库文件夹，数据库: $dbName (${if (dbExists) "打开已有数据库" else "创建新数据库"})")

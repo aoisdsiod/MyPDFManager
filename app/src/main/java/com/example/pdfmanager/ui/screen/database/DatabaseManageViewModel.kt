@@ -8,6 +8,7 @@ import android.provider.DocumentsContract
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.pdfmanager.data.local.DatabaseBackupManager
 import com.example.pdfmanager.data.local.PdfManagerDatabase
 import com.example.pdfmanager.data.local.PreferencesManager
 import com.example.pdfmanager.data.repository.AppContainer
@@ -90,6 +91,16 @@ class DatabaseManageViewModel : ViewModel() {
      */
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    /**
+     * 【是否正在备份当前数据库】
+     *
+     * true 表示正在自动备份当前使用的数据库（发生在"切换到此库"和
+     * "导入数据库"操作前），UI 应弹出"正在备份数据库…"加载框提示用户。
+     * 备份完成后置为 false。
+     */
+    private val _isBackingUp = MutableStateFlow(false)
+    val isBackingUp: StateFlow<Boolean> = _isBackingUp.asStateFlow()
 
     /**
      * 【当前使用的数据库对应的库文件夹 URI】
@@ -239,6 +250,21 @@ class DatabaseManageViewModel : ViewModel() {
         viewModelScope.launch {
             _isLoading.value = true
             try {
+                // ── 0. 切换前自动备份当前正在使用的数据库 ─────────────
+                // 防止切换后原库数据无法找回（备份到原库的 database/backup 目录）
+                // 备份期间弹出"正在备份数据库…"加载框提示用户
+                _isBackingUp.value = true
+                try {
+                    val backupResult = DatabaseBackupManager.backupCurrentDatabase(context)
+                    if (backupResult.success) {
+                        Log.i(TAG, "切换前已自动备份当前库: ${backupResult.fileName}")
+                    } else {
+                        Log.w(TAG, "切换前自动备份当前库失败: ${backupResult.message}")
+                    }
+                } finally {
+                    _isBackingUp.value = false
+                }
+
                 // ── 执行切换 ─────────────────────────────────────────
                 // AppContainer.switchLibrary() 会关闭旧数据库、打开新数据库、
                 // 重新初始化所有 Repository，并触发 Activity 重建
@@ -260,71 +286,43 @@ class DatabaseManageViewModel : ViewModel() {
     }
 
     /**
-     * 【导出数据库文件】
+     * 【导出数据库文件（备份到库文件夹 database/backup）】
      *
-     * 将指定的数据库文件复制到用户通过 SAF 选择的目标位置。
-     * 导出前会执行 SQLite WAL checkpoint 以确保数据完整性。
+     * 将指定的数据库文件备份到「库文件夹/database/backup」目录，
+     * 命名格式为 `年_月_日_backup_秒时间戳.db`，该目录中此类正常备份
+     * 最多保留 3 份，超出后自动删除最旧的一份。
      *
      * 执行流程：
-     * 1. 获取数据库文件在 databases/ 目录中的完整路径
-     * 2. 检查该文件是否当前正在使用（如果正在使用，先执行 checkpoint）
-     * 3. 使用 android.database.sqlite.SQLiteDatabase 对当前数据库执行 checkpoint
-     * 4. 通过 Context ContentResolver 打开目标 URI 的输出流
-     * 5. 读取源文件的输入流并复制到输出流
-     * 6. 关闭所有流，发送成功消息
+     * 1. 调用 DatabaseBackupManager.exportBackup() 完成导出与限额清理
+     * 2. 导出前会对当前使用的库执行 WAL checkpoint，确保备份数据完整
+     * 3. 通过 Toast 通知用户备份结果
      *
      * 关于 WAL checkpoint 的说明：
      * Room 默认使用 WAL（Write-Ahead Logging）模式，部分数据可能还在 WAL 文件中
-     * 而未合并到主数据库文件。执行 checkpoint 可以强制合并 WAL，确保导出的文件
-     * 包含全部数据。注意不要对源文件路径直接打开 SQLiteDatabase，而是通过
-     * PdfManagerDatabase 的 getOpenHelper().writableDatabase 获取当前实例。
+     * 而未合并到主数据库文件。DatabaseBackupManager 在导出前会强制执行
+     * checkpoint 合并 WAL，确保备份的文件包含全部数据。
      *
      * 调用位置：
-     * - UI 中用户点击"导出"按钮 → SAF 创建文档 → 回调中调用此方法
+     * - UI 中用户点击"导出"按钮 → 直接调用此方法（无需 SAF 位置选择）
      *
      * @param context    Android Context
      * @param dbFileName 要导出的数据库文件名
-     * @param targetUri  目标文件的 SAF URI（由 ACTION_CREATE_DOCUMENT 返回）
      */
-    fun exportDatabase(context: Context, dbFileName: String, targetUri: Uri) {
+    fun exportDatabase(context: Context, dbFileName: String) {
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                // ── 定位源数据库文件的完整路径 ───────────────────────
-                val dbPath = context.getDatabasePath(dbFileName).absolutePath
+                // ── 委托 DatabaseBackupManager 执行导出 ────────────────
+                // 内部完成：定位/创建 backup 目录 → WAL checkpoint → 复制文件 → 限额清理
+                val result = DatabaseBackupManager.exportBackup(context, dbFileName)
 
-                // ── 检查是否为当前使用的数据库，若是则执行 checkpoint ──
-                // 确保 WAL 日志合并到主文件，导出的数据是最新的
-                withContext(Dispatchers.IO) {
-                    if (_databases.value.any { it.dbFileName == dbFileName && it.isCurrent }) {
-                        try {
-                            // 通过 Room 的 OpenHelper 获取可写数据库并执行 checkpoint
-                            val db = PdfManagerDatabase.getDatabase(context, dbFileName)
-                            val sqliteDb = db.openHelper.writableDatabase
-                            // 执行 WAL checkpoint，强制将 WAL 内容合并到主数据库文件
-                            sqliteDb.execSQL("PRAGMA wal_checkpoint(FULL)")
-                            Log.d(TAG, "已对 $dbFileName 执行 WAL checkpoint")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "执行 WAL checkpoint 失败，将继续导出: $dbFileName", e)
-                            // checkpoint 失败不是致命错误，继续尝试导出
-                        }
-                    }
-
-                    // ── 复制文件内容到目标 URI ───────────────────────
-                    val sourceFile = File(dbPath)
-                    if (!sourceFile.exists()) {
-                        throw IllegalStateException("源数据库文件不存在: $dbPath")
-                    }
-
-                    context.contentResolver.openOutputStream(targetUri)?.use { outputStream ->
-                        sourceFile.inputStream().use { inputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
-                    } ?: throw IllegalStateException("无法打开目标文件输出流")
+                if (result.success) {
+                    Log.i(TAG, "数据库导出成功: $dbFileName -> ${result.fileName}")
+                    _toastMessage.value = "数据库导出成功: ${result.fileName}"
+                } else {
+                    Log.e(TAG, "数据库导出失败: $dbFileName - ${result.message}")
+                    _toastMessage.value = "导出失败: ${result.message}"
                 }
-
-                Log.i(TAG, "数据库导出成功: $dbFileName -> $targetUri")
-                _toastMessage.value = "数据库导出成功: $dbFileName"
             } catch (e: Exception) {
                 Log.e(TAG, "导出数据库失败: $dbFileName", e)
                 _toastMessage.value = "导出失败: ${e.localizedMessage}"
@@ -341,6 +339,9 @@ class DatabaseManageViewModel : ViewModel() {
      * 并保存映射关系，然后切换到目标库文件夹。
      *
      * 执行流程：
+     * 0. 若导入目标是当前正在使用的库（覆盖导入），先自动备份当前库，
+     *    防止 closeDatabase 后 switchLibrary 无法备份、当前库数据被覆盖丢失；
+     *    若目标不是当前库，切换前备份由 AppContainer.switchLibrary() 统一负责
      * 1. 根据目标库文件夹 URI 生成对应的数据库文件名
      * 2. 计算 hashCode 作为数据库文件名的一部分（与 AppContainer 规则一致）
      * 3. 检查该文件名是否已存在（若存在则覆盖，需提醒用户）
@@ -370,6 +371,23 @@ class DatabaseManageViewModel : ViewModel() {
                 val dbName = "pdf_manager_${targetLibraryUriStr.hashCode()}.db"
 
                 Log.i(TAG, "开始导入数据库: 源=$sourceUri, 目标库=$targetLibraryUriStr, 文件名=$dbName")
+
+                // ── 0. 导入前自动备份当前正在使用的数据库 ─────────────
+                // 防止导入/覆盖操作导致当前库数据丢失（备份到当前库的
+                // database/backup 目录）。无论目标库是否为当前库都执行备份；
+                // 若目标是当前库，复制文件前会先 closeDatabase()，因此必须在
+                // 关闭前备份。备份期间弹出"正在备份数据库…"加载框提示用户。
+                _isBackingUp.value = true
+                try {
+                    val backupResult = DatabaseBackupManager.backupCurrentDatabase(context)
+                    if (backupResult.success) {
+                        Log.i(TAG, "导入前已自动备份当前库: ${backupResult.fileName}")
+                    } else {
+                        Log.w(TAG, "导入前自动备份当前库失败: ${backupResult.message}")
+                    }
+                } finally {
+                    _isBackingUp.value = false
+                }
 
                 withContext(Dispatchers.IO) {
                     // ── 获取 databases/ 目录路径 ─────────────────────

@@ -1,6 +1,5 @@
 package com.example.pdfmanager.ui.screen.database
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -36,7 +35,8 @@ import androidx.navigation.NavController
  *   1. 查看所有数据库文件的列表（文件名、大小、关联的库文件夹名称）
  *   2. 识别当前正在使用的数据库
  *   3. 切换到其他数据库
- *   4. 导出指定的数据库文件到外部存储（备份）
+ *   4. 导出指定的数据库文件到「库文件夹/database/backup」备份目录
+ *      （自动命名 `年_月_日_backup_时间戳.db`，该目录中最多保留 3 份）
  *   5. 从外部文件导入数据库（恢复）
  *
  * ── 调用位置 ──
@@ -61,7 +61,7 @@ import androidx.navigation.NavController
  * ── 交互逻辑 ──
  * 1. 页面加载时自动调用 loadDatabases() 扫描所有数据库文件
  * 2. 点击"切换到此库"→ 弹出确认对话框 → 确认后切换
- * 3. 点击"导出"→ 弹出 SAF 创建文档选择器 → 选择位置后复制文件
+ * 3. 点击"导出"→ 一键备份到库文件夹 database/backup（自动命名、限 3 份）
  * 4. 点击"导入数据库"→ 先弹出 SAF 打开文档选择器选择源文件 → 然后弹出
  *    SAF 文件夹选择器选择目标库文件夹 → 复制文件并切换
  * 5. 操作成功或失败通过 Toast 提示用户
@@ -87,6 +87,8 @@ fun DatabaseManageScreen(
     val databases by viewModel.databases.collectAsStateWithLifecycle()
     // 是否正在加载中
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    // 是否正在自动备份当前数据库（切换/导入前的备份加载框）
+    val isBackingUp by viewModel.isBackingUp.collectAsStateWithLifecycle()
     // Toast 消息
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
 
@@ -97,30 +99,9 @@ fun DatabaseManageScreen(
     var switchConfirmDbName by remember { mutableStateOf<String?>(null) }
 
     // ── SAF 文件选择器状态 ─────────────────────────────────────────────
-    // 导出文件选择器：当用户点击"导出"时，用此 launcher 创建新文档
-    // 临时存储当前要导出的数据库文件名
-    var pendingExportDbName by remember { mutableStateOf<String?>(null) }
-
     // 导入文件选择器：当用户点击"导入数据库"时，先选择源文件
     // 选中源文件后，再弹出文件夹选择器选择目标库文件夹
     var pendingImportSourceUri by remember { mutableStateOf<Uri?>(null) }
-
-    /**
-     * 【SAF 创建文档选择器（导出操作）】
-     *
-     * 使用 ACTION_CREATE_DOCUMENT 让用户选择导出文件的保存位置和文件名。
-     * 返回的 URI 将被用于写入数据库文件内容。
-     */
-    val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/x-sqlite3")
-    ) { uri: Uri? ->
-        if (uri != null && pendingExportDbName != null) {
-            val dbName = pendingExportDbName!!
-            // 执行导出操作
-            viewModel.exportDatabase(context, dbName, uri)
-            pendingExportDbName = null
-        }
-    }
 
     /**
      * 【SAF 打开文档选择器（导入源文件选择）】
@@ -352,12 +333,8 @@ fun DatabaseManageScreen(
                         DatabaseInfoCard(
                             info = dbInfo,
                             onExport = {
-                                // 保存当前要导出的文件名，启动 SAF 创建文档
-                                pendingExportDbName = dbInfo.dbFileName
-                                // 使用原始文件名作为默认导出文件名（去掉 .db 后缀加上时间戳）
-                                val defaultName = dbInfo.dbFileName
-                                    .substringBeforeLast(".db") + "_backup.db"
-                                exportLauncher.launch(defaultName)
+                                // 导出到库文件夹 database/backup（自动命名、限 3 份）
+                                viewModel.exportDatabase(context, dbInfo.dbFileName)
                             },
                             onSwitch = {
                                 // 弹出切换确认对话框
@@ -410,6 +387,30 @@ fun DatabaseManageScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+            }
+
+            // ── 备份加载框（切换/导入前自动备份当前库时显示） ────────
+            if (isBackingUp) {
+                // 不可取消的加载对话框，提示用户正在备份数据库
+                AlertDialog(
+                    onDismissRequest = { /* 备份期间禁止关闭 */ },
+                    title = {
+                        Text("正在备份数据库")
+                    },
+                    text = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Text("正在备份当前数据库，请稍候…")
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {}
+                )
             }
         }
     }

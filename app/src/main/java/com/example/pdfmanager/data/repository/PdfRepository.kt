@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import androidx.room.withTransaction
 import com.example.pdfmanager.data.local.FileScanner
 import com.example.pdfmanager.data.local.PdfFileDao
 import com.example.pdfmanager.data.local.PdfManagerDatabase
@@ -83,6 +84,7 @@ class PdfRepository(
     private val fileScanner: FileScanner,
     private val preferencesManager: PreferencesManager,
     private val searchIndexRepository: SearchIndexRepository,
+    private val database: PdfManagerDatabase,
     private val pdfFileDao: PdfFileDao,
     private val pdfTagDao: PdfTagDao
 ) {
@@ -225,13 +227,13 @@ class PdfRepository(
                 scannedFiles.add(pdfFile)
                 updateCounter++
                 if (updateCounter % 5 == 0) {
-                    _pdfFiles.value = scannedFiles.sortedBy { it.name.lowercase() }
+                    _pdfFiles.value = scannedFiles.sortedByDescending { it.lastOpenedTime }
                 }
             }
         }
         
         // 最后再更新一次（确保全部显示）
-        _pdfFiles.value = scannedFiles.sortedBy { it.name.lowercase() }
+        _pdfFiles.value = scannedFiles.sortedByDescending { it.lastOpenedTime }
         
         // 持久化到 Room 数据库
         saveToRoom(scannedFiles)
@@ -289,9 +291,18 @@ class PdfRepository(
             Log.w(TAG, "quickIncrementalScan: 内存无数据，降级为全量扫描")
             val scannedFiles = fileScanner.scanLibrary(libraryUri)
             val updatedFiles = mergeFileLists(emptyList(), scannedFiles)
-            _pdfFiles.value = updatedFiles.sortedBy { it.name.lowercase() }
+            _pdfFiles.value = updatedFiles.sortedByDescending { it.lastOpenedTime }
             saveToRoom(updatedFiles)
             return@withContext ScanResult(true, addedCount = updatedFiles.size, deletedCount = 0, movedCount = 0)
+        }
+
+        // ── 空扫描保护 ────────────────────────────────────────────────
+        // 若扫描结果为空但数据库有记录，说明可能是 SAF 权限失效、URI 无效或
+        // 目录暂时不可访问，而非文件真的全部被删除。此时跳过删除逻辑，
+        // 避免把数据库中的全部记录误判为"已删除"而清空数据。
+        if (currentFiles.isEmpty()) {
+            Log.e(TAG, "quickIncrementalScan: 扫描结果为空但数据库有 ${oldFiles.size} 条记录，疑似权限失效或目录不可访问，跳过删除以保护数据")
+            return@withContext ScanResult(false)
         }
 
         val oldMap = oldFiles.associateBy { it.id }
@@ -319,10 +330,14 @@ class PdfRepository(
                     // ✅ 判定为"移动文件"：直接更新数据库记录的 ID 和 URI，保留所有元数据
                     matchedAsMovedOldIds.add(candidateOldFile.id)
                     Log.d(TAG, "quickIncrementalScan: 移动文件 ${currentFile.name}, 旧lastReadPage=${candidateOldFile.lastReadPage}, 旧tags=${candidateOldFile.tags.size}")
-                    // 更新 pdf_files：新 ID + 新 URI，保留 notes/lastReadPage/isFavorite 等
-                    pdfFileDao.updateIdAndUri(candidateOldFile.id, currentFile.id, currentFile.uri.toString())
-                    // 同步更新 pdf_tags 中的 URI 指向，使标签跟随文件移动
-                    pdfTagDao.updatePdfFileUri(candidateOldFile.uri.toString(), currentFile.uri.toString())
+                    // 两步数据库写（更新文件 ID/URI + 更新标签 URI 指向）放在同一事务中，
+                    // 避免中途失败导致"文件记录已更新但标签还指向旧 URI"的不一致
+                    database.withTransaction {
+                        // 更新 pdf_files：新 ID + 新 URI，保留 notes/lastReadPage/isFavorite 等
+                        pdfFileDao.updateIdAndUri(candidateOldFile.id, currentFile.id, currentFile.uri.toString())
+                        // 同步更新 pdf_tags 中的 URI 指向，使标签跟随文件移动
+                        pdfTagDao.updatePdfFileUri(candidateOldFile.uri.toString(), currentFile.uri.toString())
+                    }
                     Log.d(TAG, "quickIncrementalScan: 已更新文件记录 ID/URI: ${currentFile.name}")
                     
                     // 内存中同样使用旧文件的元数据 + 新 ID/URI
@@ -358,21 +373,27 @@ class PdfRepository(
             hasChanges = true
             Log.d(TAG, "quickIncrementalScan: 发现 $deletedCount 个文件被删除，准备从数据库删除")
             
-            // 从 Room 数据库删除这些文件
-            for (deletedFile in deletedFiles) {
-                try {
-                    pdfFileDao.deleteById(deletedFile.id)
-                    // 同时删除关联的标签
-                    pdfTagDao.deleteByPdfFileUri(deletedFile.uri.toString())
-                    Log.d(TAG, "quickIncrementalScan: 已从数据库删除 ${deletedFile.displayName}")
-                } catch (e: Exception) {
-                    Log.e(TAG, "quickIncrementalScan: 删除 ${deletedFile.displayName} 失败", e)
+            // 从 Room 数据库删除这些文件（放在同一事务中）
+            // 每个文件的删除包含两步：删除文件记录 + 删除关联标签。
+            // 若无事务保护，中途崩溃会留下"文件删了但标签没删"的脏数据；
+            // 事务保证要么全部删除成功，要么全部回滚。
+            database.withTransaction {
+                for (deletedFile in deletedFiles) {
+                    try {
+                        pdfFileDao.deleteById(deletedFile.id)
+                        // 同时删除关联的标签
+                        pdfTagDao.deleteByPdfFileUri(deletedFile.uri.toString())
+                        Log.d(TAG, "quickIncrementalScan: 已从数据库删除 ${deletedFile.displayName}")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "quickIncrementalScan: 删除 ${deletedFile.displayName} 失败", e)
+                        // 事务内抛出的异常会触发回滚；这里捕获并继续，避免单条失败中断整体删除
+                    }
                 }
             }
         }
 
         if (hasChanges || mergedList.size != oldFiles.size) {
-            _pdfFiles.value = mergedList.sortedBy { it.name.lowercase() }
+            _pdfFiles.value = mergedList.sortedByDescending { it.lastOpenedTime }
             saveToRoom(mergedList)
             Log.d(TAG, "quickIncrementalScan: 完成，共 ${mergedList.size} 个文件，新增 $addedCount 个，删除 $deletedCount 个，移动 $movedCount 个")
             return@withContext ScanResult(true, addedCount = addedCount, deletedCount = deletedCount, movedCount = movedCount)
@@ -453,7 +474,7 @@ class PdfRepository(
             }
             
             if (hasChanges) {
-                _pdfFiles.value = updatedList.sortedBy { it.name.lowercase() }
+                _pdfFiles.value = updatedList.sortedByDescending { it.lastOpenedTime }
                 saveToRoom(updatedList)
                 return@withContext true
             }
@@ -500,7 +521,7 @@ class PdfRepository(
         }
         
         // 按文件名排序
-        return mergedList.sortedBy { it.name.lowercase() }
+        return mergedList.sortedByDescending { it.lastOpenedTime }
     }
     
     // ── 文件查询方法 ─────────────────────────────────────
@@ -899,7 +920,7 @@ class PdfRepository(
             } else {
                 mutable.add(pdfFile)
             }
-            mutable.sortedBy { it.name.lowercase() }
+            mutable.sortedByDescending { it.lastOpenedTime }
         }
         // 同步更新搜索索引
         searchIndexRepository.update(pdfFile)
@@ -1025,8 +1046,9 @@ class PdfRepository(
             val entities = pdfFileDao.getAll()
             if (entities.isNotEmpty()) {
                 val files = entities.map { it.toPdfFile() }
-                _pdfFiles.value = files.sortedBy { it.name.lowercase() }
-                Log.d(TAG, "restoreFromRoom: 恢复了 ${files.size} 个文件")
+                val maxTime = files.maxOfOrNull { it.lastOpenedTime } ?: 0L
+                Log.d(TAG, "restoreFromRoom: 恢复了 ${files.size} 个文件, maxLastOpened=$maxTime")
+                _pdfFiles.value = files.sortedByDescending { it.lastOpenedTime }
                 files
             } else {
                 Log.d(TAG, "restoreFromRoom: 数据库为空")

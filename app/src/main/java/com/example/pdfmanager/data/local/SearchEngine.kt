@@ -75,6 +75,15 @@ class SearchEngine {
     private val fileIdToName: MutableMap<String, String> = mutableMapOf()
 
     /**
+     * 备注索引 —— (小写备注文本, PdfFile) 对列表
+     *
+     * 线性扫描结构，用于按备注关键词搜索文件。
+     * 只索引有备注内容的文件，空备注不入索引。
+     * 时间复杂度：O(n) 扫描，n = 有备注的文件数（通常远小于文件总数）。
+     */
+    private val notesIndex: MutableList<Pair<String, PdfFile>> = mutableListOf()
+
+    /**
      * 数字文件名正则表达式 —— 只匹配 3-7 位纯数字
      *
      * ^         - 字符串开始
@@ -125,6 +134,7 @@ class SearchEngine {
         exactIndex.clear()
         clearTrie(trieRoot)
         fileIdToName.clear()
+        notesIndex.clear()
         for (file in files) {
             addToIndex(file)
         }
@@ -164,28 +174,46 @@ class SearchEngine {
     }
 
     /**
-     * 搜索文件 —— 先精确查找，未命中则降级到前缀搜索
+     * 搜索文件 —— 数字文件名精确/前缀匹配 + 备注文本匹配
      *
      * 【搜索策略】
      * 1. 空查询直接返回空列表（避免无意义搜索）
      * 2. 先在 exactIndex 中精确查找（HashMap 的 O(1) 查询）
      * 3. 精确命中则直接返回结果副本（toList() 防止外部修改内部数据）
-     * 4. 未命中则调用 prefixSearch() 进行前缀匹配
+     * 4. 未命中则调用 prefixSearch() 进行文件名前缀匹配
+     * 5. 同时扫描 notesIndex 进行备注文本 contains 匹配（不区分大小写）
+     * 6. 合并数字文件名和备注的所有结果，按 id 去重
      *
      * 【使用场景】
-     * - 用户在搜索框输入数字后，SearchViewModel 触发此方法
+     * - 用户在搜索框输入数字或文本关键词后，SearchViewModel 触发此方法
      * - 配合协程和防抖（Debounce），在用户停止输入后执行搜索
      *
-     * @param query 用户输入的搜索关键词（纯数字字符串，不含扩展名）
-     * @return 匹配的 PdfFile 列表，未匹配返回空列表
+     * @param query 用户输入的搜索关键词
+     * @return 匹配的 PdfFile 列表，已去重，未匹配返回空列表
      */
     fun search(query: String): List<PdfFile> {
         if (query.isEmpty()) return emptyList()
+
+        val resultMap = linkedMapOf<String, PdfFile>() // 保持插入顺序，O(1) 去重
+
+        // ── 1. 数字文件名搜索 ──
         val exactResults = exactIndex[query]
         if (exactResults != null) {
-            return exactResults.toList()
+            exactResults.forEach { resultMap[it.id] = it }
         }
-        return prefixSearch(query)
+        if (resultMap.isEmpty()) {
+            prefixSearch(query).forEach { resultMap[it.id] = it }
+        }
+
+        // ── 2. 备注文本搜索 ──
+        val lowerQuery = query.lowercase()
+        for ((lowerNotes, file) in notesIndex) {
+            if (file.id !in resultMap && lowerNotes.contains(lowerQuery)) {
+                resultMap[file.id] = file
+            }
+        }
+
+        return resultMap.values.toList()
     }
 
     /**
@@ -220,6 +248,12 @@ class SearchEngine {
      */
     private fun addToIndex(file: PdfFile) {
         val nameWithoutExt = stripExtension(file.name)
+
+        // ── 备注索引：所有有备注的文件都加入 ──
+        if (file.notes.isNotBlank()) {
+            notesIndex.add(Pair(file.notes.lowercase(), file))
+        }
+
         // 只索引纯数字命名的文件（3-7 位）
         if (!numericPattern.matcher(nameWithoutExt).matches()) return
 
@@ -253,6 +287,9 @@ class SearchEngine {
      * @param fileId PdfFile 的 ID（UUID 字符串）
      */
     private fun removeInternal(fileId: String) {
+        // ── 从备注索引中移除 ──
+        notesIndex.removeAll { it.second.id == fileId }
+
         val name = fileIdToName[fileId] ?: return
         exactIndex[name]?.removeAll { it.id == fileId }
         if (exactIndex[name]?.isEmpty() == true) {

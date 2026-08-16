@@ -50,10 +50,10 @@ import kotlinx.coroutines.delay
  *
  * ## 功能说明
  * 1. 提供全屏搜索界面，顶部显示搜索栏，自动聚焦并弹出软键盘
- * 2. 用户输入搜索关键词（支持数字文件名搜索），实时显示匹配结果
+ * 2. 用户输入搜索关键词（支持数字文件名 + 备注文本搜索），实时显示匹配结果
  * 3. 搜索结果以列表形式展示，样式与 [AllFilesScreen] 的列表模式保持一致
  * 4. 点击搜索结果项跳转到 PDF 详情页（`detail/{fileId}`），此时底部导航隐藏
- * 5. 清空搜索框或未输入时显示空状态提示"输入数字搜索文件名"
+ * 5. 清空搜索框或未输入时显示空状态提示"输入关键词搜索文件名或备注"
  * 6. 搜索结果为空时显示"未找到匹配的文件"
  *
  * ## UI 结构
@@ -135,7 +135,7 @@ fun SearchScreen(
                     OutlinedTextField(
                         value = query,
                         onValueChange = { viewModel.onQueryChange(it) },
-                        placeholder = { Text("输入数字搜索文件名") },
+                        placeholder = { Text("搜索文件名或备注") },
                         singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -155,7 +155,7 @@ fun SearchScreen(
                 // 状态 1：搜索框为空 → 显示空状态提示
                 query.isEmpty() -> {
                     Text(
-                        text = "输入数字搜索文件名",
+                        text = "输入关键词搜索文件名或备注",
                         textAlign = TextAlign.Center,
                         modifier = Modifier.align(Alignment.Center)
                     )

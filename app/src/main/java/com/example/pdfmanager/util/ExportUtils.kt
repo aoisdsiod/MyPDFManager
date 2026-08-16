@@ -244,24 +244,27 @@ object ExportUtils {
                     val tagEntities = AppContainer.tagRepository.getTagsForPdf(matchedFile.uri.toString())
 
                     if (tagEntities.isNotEmpty()) {
-                        // 按类别 ID 分组标签，reversed() 使类别顺序与创建顺序一致
+                        // 按类别 sortOrder 升序排列（与详情页、设置页一致）
                         val tagsByCategory = tagEntities.groupBy { it.categoryId }
-                        for ((categoryId, tags) in tagsByCategory.entries.reversed()) {
-                            // 根据 categoryId 查找类别名称，若找不到则回退显示 categoryId 本身
+                        val sortedEntries = tagsByCategory.entries.sortedBy { (categoryId, _) ->
+                            categories.find { it.id == categoryId }?.sortOrder ?: Int.MAX_VALUE
+                        }
+                        for ((categoryId, tags) in sortedEntries) {
                             val categoryName = categories.find { it.id == categoryId }?.name ?: categoryId
-                            // 格式：类别名称：标签值1、标签值2
+                            // 标签按 tagValue 降序排列（与详情页一致）
                             content.append("$categoryName：")
-                            content.append(tags.joinToString("、") { it.tagValue })
+                            content.append(tags.sortedByDescending { it.tagValue }.joinToString("、") { it.tagValue })
                             content.append("\n")
                         }
                     }
+
 
                     // 段间空行
                     content.append("\n")
 
                     // ── 备注信息 ──
                     if (matchedFile.notes.isNotBlank()) {
-                        content.append("备注信息：\n${matchedFile.notes}\n")
+                        content.append("备注：\n${matchedFile.notes}\n")
                     }
                 }
             }

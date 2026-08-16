@@ -45,6 +45,13 @@ import android.util.Log
  * - v2：新增 OrganizeFolder 和 FolderPdfOrder 表
  * - v3：新增 FavoriteFolder 表
  * - v4：PdfFileEntity 新增 thumbnail_generated 和 thumbnail_path 列（MIGRATION_3_4）
+ * - v5：新增 last_opened_time 列（MIGRATION_4_5）
+ *
+ * 损坏保护策略（v2.0 改进）：
+ * - 通过 CorruptionAwareOpenHelperFactory 接管数据库损坏事件：
+ *   损坏时先自动导出 broken 现场备份到「库文件夹/database/backup」，再执行默认删库重建
+ * - 不再使用 fallbackToDestructiveMigration()（旧配置会静默删库且不保留任何现场）
+ * - 迁移路径缺失时抛出 IllegalStateException 让上层感知，而非静默丢数据
  * 
  * 线程安全：
  * - 使用 @Volatile 和 synchronized 双重检查锁定保证单例安全
@@ -55,7 +62,7 @@ import android.util.Log
  * - 被依赖：AppContainer、所有 Repository 层类
  * 
  * @author PDF Manager Development Team
- * @version 4
+ * @version 5
  * @since 2024-01-01
  */
 @Database(
@@ -68,7 +75,7 @@ import android.util.Log
         CategoryTagEntity::class,
         PdfTagEntity::class
     ],
-    version = 4,  // 从 v3 升级到 v4，添加 thumbnailGenerated 列
+    version = 5,  // v4→v5: 添加 last_opened_time 列
     exportSchema = false  // 生产环境建议设为 true 以跟踪 Schema 变更历史
 )
 abstract class PdfManagerDatabase : RoomDatabase() {
@@ -121,14 +128,23 @@ abstract class PdfManagerDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pdf_files ADD COLUMN last_opened_time INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         /**
          * 获取数据库实例（单例模式，支持多库隔离）
          * 
          * 功能说明：
          * 1. 如果数据库名不同，先关闭旧数据库再创建新的
          * 2. 使用双重检查锁定（Double-Checked Locking）保证线程安全
-         * 3. 自动执行 MIGRATION_3_4 迁移逻辑
-         * 4. 如果迁移失败，回退到破坏性重建（fallbackToDestructiveMigration）
+         * 3. 自动执行 MIGRATION_3_4 / MIGRATION_4_5 迁移逻辑
+         * 4. 使用损坏感知的 OpenHelper 工厂（CorruptionAwareOpenHelperFactory）：
+         *    - 数据库损坏时，先自动导出 broken 现场备份，再执行默认删库重建
+         *    - 替代旧的 fallbackToDestructiveMigration()（该配置会静默删库且不保留现场）
+         * 5. 迁移路径缺失时抛出异常让上层感知（不再静默删库重建，避免数据无感丢失）
          * 
          * 调用位置：
          * - AppContainer.init() - 初始化时获取默认数据库
@@ -156,14 +172,33 @@ abstract class PdfManagerDatabase : RoomDatabase() {
                     PdfManagerDatabase::class.java,
                     dbName
                 )
-                    .addMigrations(MIGRATION_3_4)
-                    .fallbackToDestructiveMigration()
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                    // 损坏感知工厂：损坏时先备份现场再删库重建（替代 fallbackToDestructiveMigration）
+                    .openHelperFactory(
+                        CorruptionAwareOpenHelperFactory(context.applicationContext, dbName)
+                    )
                     .build()
                 INSTANCE = instance
                 currentDbName = dbName
                 instance
             }
         }
+
+        /**
+         * 获取当前打开的数据库名称
+         * 
+         * 功能说明：
+         * 1. 返回当前已打开的数据库文件名（如 "pdf_manager_12345.db"）
+         * 2. 供 DatabaseBackupManager.checkpointIfCurrent() 判断目标数据库是否为当前库，
+         *    仅对当前库执行 WAL checkpoint，避免调用 getDatabase() 产生切换副作用
+         * 3. 从未打开任何数据库时返回空字符串 ""
+         * 
+         * 调用位置：
+         * - DatabaseBackupManager.checkpointIfCurrent() - 导出前判断是否为当前库
+         * 
+         * @return 当前数据库文件名（未打开时为 ""）
+         */
+        fun getCurrentDbName(): String = currentDbName
 
         /**
          * 关闭当前数据库（切换库文件夹时调用）

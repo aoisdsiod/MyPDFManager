@@ -286,6 +286,8 @@ class AllFilesViewModel(
                 applyCurrentFilter()
                 AppContainer.searchIndexRepository.buildIndex(restoredFiles)
                 _isLoading.value = false
+                val top3 = restoredFiles.take(3).map { "${it.name}(${it.lastOpenedTime})" }
+                Log.d("AllFilesViewModel", "从 Room 恢复 ${restoredFiles.size} 个文件, 前3: ${top3.joinToString()}")
                 Log.d("AllFilesViewModel", "从 Room 恢复 ${restoredFiles.size} 个文件，立即显示（无扫描）")
             } else {
                 // 恢复失败（首次使用）：需要全量扫描
